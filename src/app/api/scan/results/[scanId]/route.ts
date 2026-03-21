@@ -34,6 +34,10 @@ export async function GET(
         crawl: row.crawl,
         analysis: row.analysis,
         created_at: row.created_at ?? null,
+        scan_status: row.scan_status ?? "done",
+        scan_phase: row.scan_phase ?? null,
+        scan_phase_detail: row.scan_phase_detail ?? null,
+        scan_error: row.scan_error ?? null,
       },
     });
   } catch (error) {

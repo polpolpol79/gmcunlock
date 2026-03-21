@@ -34,6 +34,6 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 1. Connect the repo and import the project in [Vercel](https://vercel.com/new).
 2. Set **Environment variables** — see **[docs/ENVIRONMENT.md](docs/ENVIRONMENT.md)** and [`.env.example`](.env.example).
 3. Production **Google OAuth**: add your Vercel URL to **Authorized redirect URIs** and set `GOOGLE_REDIRECT_URI` + `NEXTAUTH_URL` accordingly.
-4. `vercel.json` sets **`regions: ["fra1"]`** and **60s** `maxDuration` for long scan API routes; scan handlers also enforce a **55s** in-route budget.
+4. `vercel.json` sets **`regions: ["fra1"]`** and **300s** `maxDuration` for scan API routes. With Supabase progress columns (see **`docs/supabase-scan-progress.sql`**), scans can return **202** and the UI polls **`/api/scan/status/:id`**. Without those columns, scans run synchronously with a **295s** default soft budget (`SCAN_ROUTE_BUDGET_MS`).
 
 More: [Next.js on Vercel](https://vercel.com/docs/frameworks/nextjs).

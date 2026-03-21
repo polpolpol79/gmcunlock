@@ -10,7 +10,16 @@ import {
   inferAvailableDataSources,
   mapScanProfileToUserProfile,
 } from "@/lib/gmc-checklist";
-import { saveScanResult } from "@/lib/scan-store";
+import {
+  completeScanResult,
+  createPendingScanResult,
+  failScanResult,
+  getScanResultById,
+  saveScanResult,
+  scheduleScanBackground,
+  updateScanProgress,
+} from "@/lib/scan-store";
+import { SCAN_PHASES, phaseDetailFor } from "@/lib/scan-progress-phases";
 import {
   fetchAllGoogleConnectedData,
   readGoogleTokensFromRequest,
@@ -31,7 +40,7 @@ import {
   type UserProfileInput,
 } from "@/lib/scan-schemas";
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
@@ -369,6 +378,203 @@ function defaultCrawlData(url: string): CrawlResult {
   };
 }
 
+type FullPipelineResult =
+  | {
+      kind: "success";
+      googleConnected: boolean;
+      pageSpeedData: PageSpeedData;
+      crawlData: CrawlResult;
+      analysis: ClaudeAnalysisResult;
+    }
+  | { kind: "fatal"; status: number; json: Record<string, unknown> }
+  | { kind: "job_failed" };
+
+async function touchFullProgress(scanId: string | null, phase: string, detail: string) {
+  if (!scanId) return;
+  await updateScanProgress(scanId, { phase, detail, status: "running" });
+}
+
+async function executeFullScanPipeline(
+  req: Request,
+  url: string,
+  profile: UserProfileInput,
+  scanId: string | null
+): Promise<FullPipelineResult> {
+  await touchFullProgress(
+    scanId,
+    SCAN_PHASES.pagespeed_crawl,
+    phaseDetailFor(SCAN_PHASES.pagespeed_crawl)
+  );
+
+  let pageSpeedData: PageSpeedData;
+  let crawlData: CrawlResult;
+  let collectionIssue = "";
+
+  try {
+    pageSpeedData = await getPageSpeedData(url);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "Unknown PageSpeed error";
+    if (!isTlsOrNetworkError(error)) throw error;
+    pageSpeedData = defaultPageSpeedData(reason);
+    collectionIssue = collectionIssue
+      ? `${collectionIssue}; PageSpeed unavailable`
+      : "PageSpeed unavailable";
+  }
+
+  try {
+    crawlData = await crawlWebsite(url);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "Unknown crawl error";
+    if (!isTlsOrNetworkError(error)) throw error;
+    crawlData = defaultCrawlData(url);
+    collectionIssue = collectionIssue
+      ? `${collectionIssue}; Crawl unavailable`
+      : "Crawl unavailable";
+    if (pageSpeedData.performance === 0 && pageSpeedData.ttfb.startsWith("Unavailable")) {
+      const msg =
+        "Both PageSpeed and Crawl data collection failed due to network/certificate issues.";
+      if (scanId) {
+        await failScanResult(scanId, `${msg} ${reason}`);
+        return { kind: "job_failed" };
+      }
+      return {
+        kind: "fatal",
+        status: 502,
+        json: {
+          ok: false,
+          error: msg,
+          details: reason,
+        },
+      };
+    }
+  }
+
+  void CHECKLIST;
+  await touchFullProgress(
+    scanId,
+    SCAN_PHASES.google_shopify,
+    phaseDetailFor(SCAN_PHASES.google_shopify)
+  );
+
+  let googleAccountData = "";
+  let gmbData = "";
+  let gmcJsonForRules = "";
+  let adsJsonForRules = "";
+  let googleConnected = false;
+  try {
+    const googleTokens = readGoogleTokensFromRequest(req);
+    if (googleTokens?.access_token) {
+      const googleData = await fetchAllGoogleConnectedData(googleTokens.access_token);
+      googleAccountData = JSON.stringify(googleData, null, 2);
+      gmbData = JSON.stringify(googleData.gmb ?? {}, null, 2);
+      gmcJsonForRules = JSON.stringify(googleData.merchant_center ?? {});
+      adsJsonForRules = JSON.stringify(googleData.google_ads ?? {});
+      googleConnected = true;
+    }
+  } catch {
+    // Non-blocking
+  }
+
+  const shopifyData = await fetchShopifyConnectedData();
+  const shopifyJson = JSON.stringify(shopifyData, null, 2);
+
+  const availableSources = inferAvailableDataSources(crawlData, pageSpeedData, {
+    gmcJson: gmcJsonForRules,
+    adsJson: adsJsonForRules,
+    shopifyJson,
+    gmbJson: gmbData,
+  });
+  const applicableItems = getApplicableRules(crawlData.fingerprint, crawlData, availableSources);
+
+  await touchFullProgress(scanId, SCAN_PHASES.analysis, phaseDetailFor(SCAN_PHASES.analysis));
+
+  const prompt = buildAnalysisPrompt(
+    url,
+    mapScanProfileToUserProfile(profile),
+    JSON.stringify(crawlData, null, 2),
+    JSON.stringify(pageSpeedData, null, 2),
+    shopifyJson,
+    gmcJsonForRules,
+    adsJsonForRules,
+    gmbData,
+    {
+      businessIdentityJson: JSON.stringify(crawlData.fingerprint, null, 2),
+      applicableItems,
+    }
+  );
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    if (scanId) {
+      await failScanResult(scanId, "Missing ANTHROPIC_API_KEY");
+      return { kind: "job_failed" };
+    }
+    return { kind: "fatal", status: 500, json: { ok: false, error: "Missing ANTHROPIC_API_KEY" } };
+  }
+
+  let analysis: ClaudeAnalysisResult;
+
+  try {
+    const client = new Anthropic({ apiKey });
+    const response = await client.messages.create({
+      model: "claude-opus-4-5",
+      max_tokens: 4000,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const text = extractClaudeText(response.content);
+    if (!text) {
+      throw new Error("Claude returned an empty response");
+    }
+
+    analysis = parseClaudeJson(text);
+  } catch (error) {
+    const reason =
+      error instanceof z.ZodError
+        ? "Invalid Claude JSON schema"
+        : error instanceof Error
+          ? error.message
+          : "Unknown Claude error";
+
+    if (isTlsOrNetworkError(error) || error instanceof z.ZodError) {
+      analysis = buildFallbackAnalysis({
+        url,
+        profile,
+        pagespeed: pageSpeedData,
+        crawl: crawlData,
+        reason: collectionIssue ? `${collectionIssue}; ${reason}` : reason,
+      });
+    } else {
+      if (scanId) {
+        await failScanResult(
+          scanId,
+          `${reason} (Claude response was not valid JSON.)`
+        );
+        return { kind: "job_failed" };
+      }
+      return {
+        kind: "fatal",
+        status: 502,
+        json: {
+          ok: false,
+          error: reason,
+          details: "Claude response was not valid JSON.",
+        },
+      };
+    }
+  }
+
+  await touchFullProgress(scanId, SCAN_PHASES.persist, phaseDetailFor(SCAN_PHASES.persist));
+
+  return {
+    kind: "success",
+    googleConnected,
+    pageSpeedData,
+    crawlData,
+    analysis,
+  };
+}
+
 export async function POST(req: Request) {
   try {
     const rate = consumeRateLimit({
@@ -404,179 +610,131 @@ export async function POST(req: Request) {
       );
     }
 
-    return await withScanTimeBudget(SCAN_ROUTE_BUDGET_MS, async () => {
-      const url = normalizeInputUrl(parsedReq.data.url);
-      const profile = parsedReq.data.profile;
+    const url = normalizeInputUrl(parsedReq.data.url);
+    const profile = parsedReq.data.profile;
 
-      // a+b) PageSpeed + Crawl (resilient for SSL/network issues)
-      let pageSpeedData: PageSpeedData;
-      let crawlData: CrawlResult;
-      let collectionIssue = "";
+    const pendingId = await createPendingScanResult({
+      url,
+      scan_type: "paid",
+      google_connected: false,
+      profile,
+      pagespeed: defaultPageSpeedData("Pending"),
+      crawl: defaultCrawlData(url),
+      phaseDetail: phaseDetailFor(SCAN_PHASES.queued),
+    });
 
+    const runPaidJob = async (scanId: string) => {
       try {
-        pageSpeedData = await getPageSpeedData(url);
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : "Unknown PageSpeed error";
-        if (!isTlsOrNetworkError(error)) throw error;
-        pageSpeedData = defaultPageSpeedData(reason);
-        collectionIssue = collectionIssue
-          ? `${collectionIssue}; PageSpeed unavailable`
-          : "PageSpeed unavailable";
-      }
-
-      try {
-        crawlData = await crawlWebsite(url);
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : "Unknown crawl error";
-        if (!isTlsOrNetworkError(error)) throw error;
-        crawlData = defaultCrawlData(url);
-        collectionIssue = collectionIssue
-          ? `${collectionIssue}; Crawl unavailable`
-          : "Crawl unavailable";
-        if (pageSpeedData.performance === 0 && pageSpeedData.ttfb.startsWith("Unavailable")) {
-          // Both collection methods failed for network/cert causes.
-          return NextResponse.json(
-            {
-              ok: false,
-              error:
-                "Both PageSpeed and Crawl data collection failed due to network/certificate issues.",
-              details: reason,
-            },
-            { status: 502 }
+        const result = await executeFullScanPipeline(req, url, profile, scanId);
+        if (result.kind === "job_failed") return;
+        if (result.kind === "fatal") {
+          await failScanResult(
+            scanId,
+            typeof result.json.error === "string" ? result.json.error : "Full scan failed"
           );
+          return;
         }
+        const ok = await completeScanResult(scanId, {
+          pagespeed: result.pageSpeedData,
+          crawl: result.crawlData,
+          analysis: result.analysis,
+          google_connected: result.googleConnected,
+        });
+        if (!ok) {
+          await failScanResult(scanId, "Could not save scan results.");
+        } else {
+          console.info("[scan/full] completed", {
+            scan_id: scanId,
+            url,
+            googleConnected: result.googleConnected,
+          });
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Full scan failed";
+        await failScanResult(scanId, msg);
+        console.error("[scan/full] job error", { scanId, msg });
       }
+    };
 
-      // c) Checklist + prompt builder
-      void CHECKLIST;
-      let googleAccountData = "";
-      let gmbData = "";
-      let gmcJsonForRules = "";
-      let adsJsonForRules = "";
-      let googleConnected = false;
-      try {
-        const googleTokens = readGoogleTokensFromRequest(req);
-        if (googleTokens?.access_token) {
-          const googleData = await fetchAllGoogleConnectedData(googleTokens.access_token);
-          googleAccountData = JSON.stringify(googleData, null, 2);
-          gmbData = JSON.stringify(googleData.gmb ?? {}, null, 2);
-          gmcJsonForRules = JSON.stringify(googleData.merchant_center ?? {});
-          adsJsonForRules = JSON.stringify(googleData.google_ads ?? {});
-          googleConnected = true;
-        }
-      } catch {
-        // Non-blocking: continue full scan without Google-connected data.
-      }
-
-      const shopifyData = await fetchShopifyConnectedData();
-      const shopifyJson = JSON.stringify(shopifyData, null, 2);
-
-      const availableSources = inferAvailableDataSources(crawlData, pageSpeedData, {
-        gmcJson: gmcJsonForRules,
-        adsJson: adsJsonForRules,
-        shopifyJson,
-        gmbJson: gmbData,
-      });
-      const applicableItems = getApplicableRules(crawlData.fingerprint, crawlData, availableSources);
-
-      const prompt = buildAnalysisPrompt(
-        url,
-        mapScanProfileToUserProfile(profile),
-        JSON.stringify(crawlData, null, 2),
-        JSON.stringify(pageSpeedData, null, 2),
-        shopifyJson,
-        gmcJsonForRules,
-        adsJsonForRules,
-        gmbData,
-        {
-          businessIdentityJson: JSON.stringify(crawlData.fingerprint, null, 2),
-          applicableItems,
-        }
-      );
-
-      const apiKey = process.env.ANTHROPIC_API_KEY;
-      if (!apiKey) {
+    if (pendingId) {
+      const deferred = await scheduleScanBackground(() => runPaidJob(pendingId));
+      if (deferred) {
         return NextResponse.json(
-          { ok: false, error: "Missing ANTHROPIC_API_KEY" },
-          { status: 500 }
+          {
+            ok: true,
+            data: {
+              pending: true,
+              scan_id: pendingId,
+              scan_type: "paid",
+              google_connected: false,
+            },
+          },
+          { status: 202 }
         );
       }
 
-      let analysis: ClaudeAnalysisResult;
+      await runPaidJob(pendingId);
+      const row = await getScanResultById(pendingId);
+      if (!row) {
+        return NextResponse.json({ ok: false, error: "Scan finished but result not found." }, { status: 500 });
+      }
+      if (row.scan_status === "error") {
+        return NextResponse.json(
+          { ok: false, error: row.scan_error ?? "Scan failed" },
+          { status: 500 }
+        );
+      }
+      const crawl = row.crawl as CrawlResult;
+      return NextResponse.json({
+        ok: true,
+        data: {
+          scan_id: row.id,
+          scan_type: "paid" as const,
+          google_connected: row.google_connected ?? false,
+          fingerprint: crawl.fingerprint,
+          pagespeed: row.pagespeed,
+          crawl: row.crawl,
+          analysis: row.analysis,
+        },
+      });
+    }
 
-      try {
-        // d) Claude call
-        const client = new Anthropic({ apiKey });
-        const response = await client.messages.create({
-          model: "claude-opus-4-5",
-          max_tokens: 4000,
-          messages: [{ role: "user", content: prompt }],
-        });
-
-        const text = extractClaudeText(response.content);
-        if (!text) {
-          throw new Error("Claude returned an empty response");
-        }
-
-        // e) Parse JSON safely
-        analysis = parseClaudeJson(text);
-      } catch (error) {
-        const reason =
-          error instanceof z.ZodError
-            ? "Invalid Claude JSON schema"
-            : error instanceof Error
-            ? error.message
-            : "Unknown Claude error";
-
-        if (isTlsOrNetworkError(error) || error instanceof z.ZodError) {
-          analysis = buildFallbackAnalysis({
-            url,
-            profile,
-            pagespeed: pageSpeedData,
-            crawl: crawlData,
-            reason: collectionIssue ? `${collectionIssue}; ${reason}` : reason,
-          });
-        } else {
-          return NextResponse.json(
-            {
-              ok: false,
-              error: reason,
-              details: "Claude response was not valid JSON.",
-            },
-            { status: 502 }
-          );
-        }
+    return await withScanTimeBudget(SCAN_ROUTE_BUDGET_MS, async () => {
+      const result = await executeFullScanPipeline(req, url, profile, null);
+      if (result.kind === "job_failed") {
+        return NextResponse.json({ ok: false, error: "Unexpected scan state." }, { status: 500 });
+      }
+      if (result.kind === "fatal") {
+        return NextResponse.json(result.json, { status: result.status });
       }
 
-      // f) Persist scan result (best effort)
       const scan_id = await saveScanResult({
         url,
         scan_type: "paid",
-        google_connected: googleConnected,
+        google_connected: result.googleConnected,
         profile,
-        pagespeed: pageSpeedData,
-        crawl: crawlData,
-        analysis,
+        pagespeed: result.pageSpeedData,
+        crawl: result.crawlData,
+        analysis: result.analysis,
       });
       if (!scan_id) {
-        console.warn("[scan/full] persisted without scan_id", { url, googleConnected });
+        console.warn("[scan/full] persisted without scan_id", { url, googleConnected: result.googleConnected });
       } else {
-        console.info("[scan/full] completed", { scan_id, url, googleConnected });
+        console.info("[scan/full] completed", { scan_id, url, googleConnected: result.googleConnected });
       }
 
-      // g) Combined result
-    return NextResponse.json({
-      ok: true,
-      data: {
-        scan_id,
-        scan_type: "paid",
-        google_connected: googleConnected,
-        fingerprint: crawlData.fingerprint,
-        pagespeed: pageSpeedData,
-        crawl: crawlData,
-        analysis,
-      },
-    });
+      return NextResponse.json({
+        ok: true,
+        data: {
+          scan_id,
+          scan_type: "paid",
+          google_connected: result.googleConnected,
+          fingerprint: result.crawlData.fingerprint,
+          pagespeed: result.pageSpeedData,
+          crawl: result.crawlData,
+          analysis: result.analysis,
+        },
+      });
     });
   } catch (error) {
     if (error instanceof ScanTimeoutError) {

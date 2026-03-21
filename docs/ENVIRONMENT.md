@@ -26,14 +26,25 @@ See also [`.env.example`](../.env.example) for a quick copy-paste template.
 ## Vercel / production notes
 
 - Set `GOOGLE_REDIRECT_URI` and `NEXTAUTH_URL` to your **production** domain.
-- Scan routes use a **55s** in-function budget and **60s** Vercel `maxDuration` in `vercel.json` + route segment config.
+- Scan routes use **`export const maxDuration = 300`** plus matching **`vercel.json`** `functions` entries (see repo). **Async scans** on Vercel use `waitUntil` after a **202** response so work can continue while the UI polls **`GET /api/scan/status/:scanId`**.
+- **Synchronous fallback** (no Supabase progress columns, or `SCAN_SYNC_ONLY=1`, or non-Vercel dev): a **`SCAN_ROUTE_BUDGET_MS`** soft cap (default **295000**) still applies via `Promise.race` to avoid hanging the client.
 - Deployment region defaults to **`fra1`** (Frankfurt) via `vercel.json` for lower latency to Europe/Israel.
+
+| Variable | Scope | Purpose |
+|----------|--------|---------|
+| `SCAN_SYNC_ONLY` | Server | If `1`, disable `waitUntil` background scans (always run synchronously in the request). |
+| `SCAN_ROUTE_BUDGET_MS` | Server | Override sync-scan time budget (ms). Default 295000. |
+
+### Async scan database columns
+
+Run **[`docs/supabase-scan-progress.sql`](supabase-scan-progress.sql)** on your `scan_results` (or `scans`) table so rows can be created as **`running`** and updated with **`scan_phase`** / **`scan_phase_detail`**. Without these columns, `createPendingScanResult` fails and the app uses the **sync** path only.
 
 ### Plan limits (important)
 
-- **Serverless duration**: `maxDuration: 60` often requires a **Vercel Pro** (or higher) plan. On **Hobby**, the platform may cap functions at **10s** — long scans can still be killed by Vercel even though the app returns **504** after 55s when the budget hits first.
-- If `vercel.json` → `functions` paths ever fail validation, Next.js still reads `export const maxDuration = 60` from each route file; adjust paths under `functions` to match your repo layout if the dashboard shows errors.
+- **`maxDuration: 300`** requires **Vercel Pro** (or compatible plan). On **Hobby**, platform limits may still stop long functions; async + polling improves UX but does not remove hard caps.
+- If `vercel.json` → `functions` paths ever fail validation, Next.js still reads `export const maxDuration` from each route file; adjust paths under `functions` to match your repo layout if the dashboard shows errors.
 
 ### Timeout behavior
 
-- The **55s** limit uses `Promise.race`: work may continue briefly in the background after a timeout, but the client gets **504** with a clear message. Individual HTTP calls (PageSpeed, crawl, Google) keep their own shorter axios timeouts where configured.
+- **Sync path**: the budget uses `Promise.race`; the client may receive **504** when the budget is exceeded. Individual HTTP calls (PageSpeed, crawl, Google) keep their own shorter axios timeouts where configured.
+- **Async path**: the HTTP response returns quickly (**202**); progress is read from Supabase via the status API until **`scan_status`** is **`done`** or **`error`**.

@@ -89,7 +89,31 @@ type ScanPayload = {
   analysis: ClaudeAnalysisResult;
 };
 
-type ScanResponse = { ok: true; data: ScanPayload } | { ok: false; error?: string; details?: string };
+type ScanAcceptedPayload = {
+  pending: true;
+  scan_id: string;
+  scan_type: ScanType;
+  google_connected: boolean;
+};
+
+type ScanResponse =
+  | { ok: true; data: ScanPayload | ScanAcceptedPayload }
+  | { ok: false; error?: string; details?: string };
+
+type ScanStatusApiResponse =
+  | {
+      ok: true;
+      data: {
+        scan_id: string;
+        status: string;
+        phase: string;
+        phase_label: string;
+        detail: string;
+        error: string | null;
+        scan_type: ScanType;
+      };
+    }
+  | { ok: false; error?: string };
 type PaymentTokenResponse =
   | { ok: true; data: { payment_token: string } }
   | { ok: false; error?: string };
@@ -116,6 +140,124 @@ function isAbortError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const name = (error as { name?: string }).name;
   return name === "AbortError";
+}
+
+function phaseStepIndex(phase: string, scanType: ScanType): number {
+  const paid = ["queued", "pagespeed_crawl", "google_shopify", "analysis", "persist", "done"];
+  const free = ["queued", "pagespeed_crawl", "analysis", "persist", "done"];
+  const order = scanType === "paid" ? paid : free;
+  const i = order.indexOf(phase);
+  return i === -1 ? Math.max(0, order.length - 2) : i;
+}
+
+function ScanProgressPanel({
+  pollState,
+  scanUrl,
+}: {
+  pollState: {
+    scanId: string;
+    scanType: ScanType;
+    phase: string;
+    phaseLabel: string;
+    detail: string;
+    startedAt: number;
+  };
+  scanUrl: string;
+}) {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const i = window.setInterval(() => setTick((x) => x + 1), 1000);
+    return () => window.clearInterval(i);
+  }, []);
+
+  const elapsed = Math.floor((Date.now() - pollState.startedAt) / 1000);
+  const steps =
+    pollState.scanType === "paid"
+      ? [
+          { key: "queued", label: "Starting" },
+          { key: "pagespeed_crawl", label: "PageSpeed & site crawl" },
+          { key: "google_shopify", label: "Google & Shopify" },
+          { key: "analysis", label: "AI compliance review" },
+          { key: "persist", label: "Saving report" },
+          { key: "done", label: "Done" },
+        ]
+      : [
+          { key: "queued", label: "Starting" },
+          { key: "pagespeed_crawl", label: "PageSpeed & site crawl" },
+          { key: "analysis", label: "AI compliance review" },
+          { key: "persist", label: "Saving report" },
+          { key: "done", label: "Done" },
+        ];
+
+  const currentIdx = phaseStepIndex(pollState.phase, pollState.scanType);
+
+  return (
+    <div dir="ltr" className="min-h-screen bg-zinc-950 text-zinc-100">
+      <div className="mx-auto w-full max-w-2xl px-4 sm:px-6 lg:px-8 py-16 sm:py-24">
+        <div className="rounded-3xl border border-indigo-500/30 bg-indigo-500/[0.07] p-8 sm:p-10">
+          <div className="flex items-center gap-3">
+            <span className="relative flex h-3 w-3">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-indigo-400 opacity-40" />
+              <span className="relative inline-flex h-3 w-3 rounded-full bg-indigo-400" />
+            </span>
+            <h1 className="text-2xl font-bold text-indigo-100">
+              {pollState.scanType === "paid" ? "Full scan" : "Free scan"} in progress
+            </h1>
+          </div>
+          <p className="mt-2 text-sm text-zinc-400">
+            <span className="sr-only" aria-live="polite">
+              {tick}
+            </span>
+            Elapsed {elapsed}s — you can keep this tab open; we update live as each stage finishes.
+          </p>
+          {scanUrl ? (
+            <p className="mt-3 text-sm text-zinc-300 break-all">
+              <span className="text-zinc-500">Target: </span>
+              {scanUrl}
+            </p>
+          ) : null}
+
+          <div className="mt-8 rounded-2xl border border-white/10 bg-black/20 p-5">
+            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Current step</p>
+            <p className="mt-1 text-lg font-semibold text-white">{pollState.phaseLabel}</p>
+            <p className="mt-2 text-sm text-zinc-300 leading-relaxed">{pollState.detail}</p>
+          </div>
+
+          <ol className="mt-8 space-y-3">
+            {steps.map((step, idx) => {
+              const done = idx < currentIdx;
+              const active = idx === currentIdx;
+              return (
+                <li
+                  key={step.key}
+                  className={`flex items-start gap-3 rounded-xl border px-4 py-3 text-sm ${
+                    active
+                      ? "border-indigo-500/50 bg-indigo-500/10 text-indigo-100"
+                      : done
+                        ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-100/90"
+                        : "border-white/5 bg-white/[0.02] text-zinc-500"
+                  }`}
+                >
+                  <span
+                    className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+                      done
+                        ? "bg-emerald-500/30 text-emerald-100"
+                        : active
+                          ? "bg-indigo-500/40 text-white"
+                          : "bg-white/10 text-zinc-500"
+                    }`}
+                  >
+                    {done ? "✓" : idx + 1}
+                  </span>
+                  <span className="font-medium">{step.label}</span>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function parseHasGmb(raw: string | null): HasGmb {
@@ -236,6 +378,14 @@ function ReportPageClient() {
   const [data, setData] = useState<ScanPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [pollState, setPollState] = useState<{
+    scanId: string;
+    scanType: ScanType;
+    phase: string;
+    phaseLabel: string;
+    detail: string;
+    startedAt: number;
+  } | null>(null);
   const [expandedCriticalId, setExpandedCriticalId] = useState<string>("");
   const [scanUrl, setScanUrl] = useState("");
 
@@ -277,7 +427,8 @@ function ReportPageClient() {
     let mounted = true;
     const controller = new AbortController();
 
-    async function loadStoredScan(currentScanId: string) {
+    async function fetchFullReportData(currentScanId: string) {
+      setPollState(null);
       const res = await fetch(`/api/scan/results/${encodeURIComponent(currentScanId)}`, {
         method: "GET",
         signal: controller.signal,
@@ -299,6 +450,36 @@ function ReportPageClient() {
         analysis: json.data.analysis,
       });
       setExpandedCriticalId(json.data.analysis.critical_issues[0]?.item_id?.toString() ?? "");
+    }
+
+    async function loadStoredScan(currentScanId: string) {
+      const statusRes = await fetch(`/api/scan/status/${encodeURIComponent(currentScanId)}`, {
+        method: "GET",
+        signal: controller.signal,
+      });
+      const statusJson = (await statusRes.json()) as ScanStatusApiResponse;
+      if (!statusRes.ok || !statusJson.ok) {
+        const errMsg =
+          statusJson.ok === false ? statusJson.error : undefined;
+        throw new Error(errMsg ?? "Failed to load scan status");
+      }
+      if (!mounted) return;
+      if (statusJson.data.status === "running" || statusJson.data.status === "queued") {
+        setPollState({
+          scanId: currentScanId,
+          scanType: statusJson.data.scan_type === "paid" ? "paid" : "free",
+          phase: statusJson.data.phase,
+          phaseLabel: statusJson.data.phase_label,
+          detail: statusJson.data.detail || "Working…",
+          startedAt: Date.now(),
+        });
+        return;
+      }
+      if (statusJson.data.status === "error") {
+        setPollState(null);
+        throw new Error(statusJson.data.error || "Scan failed");
+      }
+      await fetchFullReportData(currentScanId);
     }
 
     async function runScan() {
@@ -333,11 +514,26 @@ function ReportPageClient() {
         throw new Error(!json.ok && json.error ? json.error : "Failed to run scan");
       }
       if (!mounted) return;
+      const payload = json.data;
+      if ("pending" in payload && payload.pending) {
+        setScanUrl(url);
+        setPollState({
+          scanId: payload.scan_id,
+          scanType: payload.scan_type,
+          phase: "queued",
+          phaseLabel: "Starting scan",
+          detail: "Your scan is running on the server. This page will update automatically.",
+          startedAt: Date.now(),
+        });
+        router.replace(`/report/${payload.scan_id}`);
+        return;
+      }
+      const complete = payload as ScanPayload;
       setScanUrl(url);
-      setData(json.data);
-      setExpandedCriticalId(json.data.analysis.critical_issues[0]?.item_id?.toString() ?? "");
-      if (json.data.scan_id) {
-        router.replace(`/report/${json.data.scan_id}`);
+      setData(complete);
+      setExpandedCriticalId(complete.analysis.critical_issues[0]?.item_id?.toString() ?? "");
+      if (complete.scan_id) {
+        router.replace(`/report/${complete.scan_id}`);
       }
     }
 
@@ -346,7 +542,10 @@ function ReportPageClient() {
       setError(null);
       try {
         if (scanId) await loadStoredScan(scanId);
-        else await runScan();
+        else {
+          setPollState(null);
+          await runScan();
+        }
       } catch (e) {
         if (isAbortError(e)) return;
         if (!mounted) return;
@@ -369,6 +568,75 @@ function ReportPageClient() {
       }
     };
   }, [scanId, url, queryScanType, profile, router]);
+
+  useEffect(() => {
+    if (!pollState?.scanId) return;
+    const id = pollState.scanId;
+    const ac = new AbortController();
+    let intervalId: ReturnType<typeof setInterval> | undefined;
+
+    async function tick() {
+      try {
+        const st = await fetch(`/api/scan/status/${encodeURIComponent(id)}`, { signal: ac.signal });
+        const sj = (await st.json()) as ScanStatusApiResponse;
+        if (ac.signal.aborted) return;
+        if (!st.ok || !sj.ok) return;
+
+        setPollState((prev) =>
+          prev && prev.scanId === id
+            ? {
+                ...prev,
+                phase: sj.data.phase,
+                phaseLabel: sj.data.phase_label,
+                detail: sj.data.detail || prev.detail,
+                scanType: sj.data.scan_type === "paid" ? "paid" : "free",
+              }
+            : prev
+        );
+
+        if (sj.data.status === "done") {
+          if (intervalId) clearInterval(intervalId);
+          const full = await fetch(`/api/scan/results/${encodeURIComponent(id)}`, { signal: ac.signal });
+          const fj = (await full.json()) as StoredScanResponse;
+          if (ac.signal.aborted) return;
+          if (!full.ok || !fj.ok) return;
+          setPollState(null);
+          setScanUrl(fj.data.url);
+          setData({
+            scan_id: fj.data.scan_id,
+            scan_type: fj.data.scan_type ?? "free",
+            google_connected: fj.data.google_connected ?? false,
+            url: fj.data.url,
+            fingerprint: fj.data.fingerprint ?? fj.data.crawl?.fingerprint ?? null,
+            pagespeed: fj.data.pagespeed,
+            crawl: fj.data.crawl,
+            analysis: fj.data.analysis,
+          });
+          setExpandedCriticalId(fj.data.analysis.critical_issues[0]?.item_id?.toString() ?? "");
+          router.replace(`/report/${fj.data.scan_id}`);
+        }
+
+        if (sj.data.status === "error") {
+          if (intervalId) clearInterval(intervalId);
+          setPollState(null);
+          setError(sj.data.error || "Scan failed");
+        }
+      } catch (e) {
+        if (isAbortError(e)) return;
+      }
+    }
+
+    intervalId = setInterval(() => void tick(), 1500);
+    void tick();
+    return () => {
+      ac.abort();
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [pollState?.scanId, router]);
+
+  if (pollState) {
+    return <ScanProgressPanel pollState={pollState} scanUrl={scanUrl} />;
+  }
 
   if (loading) return <LoadingState scanType={queryScanType} />;
 

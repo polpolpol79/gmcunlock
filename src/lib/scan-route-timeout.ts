@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 
-/** Stay under Vercel maxDuration (e.g. 60s) with safety margin. */
-export const SCAN_ROUTE_BUDGET_MS = 55_000;
+const envBudget = Number(process.env.SCAN_ROUTE_BUDGET_MS);
+
+/**
+ * Synchronous-scan safety margin under `export const maxDuration` (see scan routes + vercel.json).
+ * Async scans use `waitUntil` on Vercel and are limited by platform maxDuration instead.
+ */
+export const SCAN_ROUTE_BUDGET_MS =
+  Number.isFinite(envBudget) && envBudget > 0 ? envBudget : 295_000;
 
 export class ScanTimeoutError extends Error {
   override name = "ScanTimeoutError";
