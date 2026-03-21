@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getPageSpeedData, type PageSpeedData } from "@/lib/pagespeed";
-import { crawlWebsite, emptySiteFingerprint, type CrawlResult } from "@/lib/crawler";
+import { crawlWebsite, emptyCrawlResult, type CrawlResult } from "@/lib/crawler";
 import {
   buildAnalysisPrompt,
   getApplicableRules,
@@ -37,36 +37,7 @@ export function defaultPageSpeedDataForFree(reason: string): PageSpeedData {
 }
 
 export function defaultCrawlDataForFree(url: string): CrawlResult {
-  return {
-    hasLogo: false,
-    hasBrandName: false,
-    hasAboutPage: false,
-    hasContactPage: false,
-    hasEmail: false,
-    emailIsBranded: false,
-    hasPhone: false,
-    hasAddress: false,
-    hasContactForm: false,
-    hasPrivacyPolicy: false,
-    hasReturnPolicy: false,
-    hasShippingPolicy: false,
-    hasTerms: false,
-    hasSSL: /^https:\/\//i.test(url),
-    hasBrokenLinks: false,
-    hasPopups: false,
-    metaTitle: "",
-    metaDescription: "",
-    hasSpellingIssues: false,
-    hasFakeUrgency: false,
-    hasFakeTrustBadges: false,
-    hasMedicalClaims: false,
-    footerHasContact: false,
-    footerHasPrivacy: false,
-    pageTitle: "",
-    allLinks: [],
-    allText: "",
-    fingerprint: emptySiteFingerprint(),
-  };
+  return emptyCrawlResult(url);
 }
 
 function normalizeChecklistValue(value: unknown): ChecklistResultValue {

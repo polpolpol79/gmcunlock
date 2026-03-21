@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getPageSpeedData, type PageSpeedData } from "@/lib/pagespeed";
-import { crawlWebsite, emptySiteFingerprint, type CrawlResult } from "@/lib/crawler";
+import { crawlWebsite, emptyCrawlResult, type CrawlResult } from "@/lib/crawler";
 import {
   CHECKLIST,
   buildAnalysisPrompt,
@@ -346,36 +346,7 @@ function defaultPageSpeedData(reason: string): PageSpeedData {
 }
 
 function defaultCrawlData(url: string): CrawlResult {
-  return {
-    hasLogo: false,
-    hasBrandName: false,
-    hasAboutPage: false,
-    hasContactPage: false,
-    hasEmail: false,
-    emailIsBranded: false,
-    hasPhone: false,
-    hasAddress: false,
-    hasContactForm: false,
-    hasPrivacyPolicy: false,
-    hasReturnPolicy: false,
-    hasShippingPolicy: false,
-    hasTerms: false,
-    hasSSL: /^https:\/\//i.test(url),
-    hasBrokenLinks: false,
-    hasPopups: false,
-    metaTitle: "",
-    metaDescription: "",
-    hasSpellingIssues: false,
-    hasFakeUrgency: false,
-    hasFakeTrustBadges: false,
-    hasMedicalClaims: false,
-    footerHasContact: false,
-    footerHasPrivacy: false,
-    pageTitle: "",
-    allLinks: [],
-    allText: "",
-    fingerprint: emptySiteFingerprint(),
-  };
+  return emptyCrawlResult(url);
 }
 
 type FullPipelineResult =
