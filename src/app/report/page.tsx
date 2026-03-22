@@ -37,7 +37,12 @@ type SiteFingerprint = {
 };
 
 type CrawlResult = {
+  url?: string;
   hasSSL: boolean;
+  responseTimeMs?: number;
+  robotsTxt?: string | null;
+  pages?: Array<{ url: string; text: string }>;
+  allLinksFound?: string[];
   fingerprint?: SiteFingerprint;
 };
 
@@ -116,6 +121,9 @@ type ScanStatusApiResponse =
   | { ok: false; error?: string };
 type PaymentTokenResponse =
   | { ok: true; data: { payment_token: string } }
+  | { ok: false; error?: string };
+type ConnectionStatusResponse =
+  | { ok: true; connected?: boolean; shop?: string | null }
   | { ok: false; error?: string };
 
 type StoredScanResponse =
@@ -399,11 +407,22 @@ function ReportPageClient() {
     () => searchParams.get("google_connected") === "1",
     [searchParams]
   );
+  const shopifyConnectedParam = useMemo(
+    () => searchParams.get("shopify_connected") === "1",
+    [searchParams]
+  );
   const googleErrorParam = useMemo(
     () => searchParams.get("google_error")?.trim() ?? "",
     [searchParams]
   );
+  const shopifyErrorParam = useMemo(
+    () => searchParams.get("shopify_error")?.trim() ?? "",
+    [searchParams]
+  );
   const profile = useMemo(() => parseProfileFromQuery(searchParams), [searchParams]);
+  const [shopDomain, setShopDomain] = useState(searchParams.get("shop")?.trim() ?? "");
+  const [shopifyConnected, setShopifyConnected] = useState(false);
+  const [connectError, setConnectError] = useState("");
 
   function buildPaidReturnToPath() {
     const qs = new URLSearchParams();
@@ -415,13 +434,61 @@ function ReportPageClient() {
     qs.set("platform", profile.platform);
     qs.set("blocked_where", profile.blocked_where);
     qs.set("has_gmb", String(profile.has_gmb));
+    if (shopDomain.trim()) qs.set("shop", shopDomain.trim());
     return `/report?${qs.toString()}`;
   }
 
-  function onConnectGoogleAndShopify() {
-    const returnTo = buildPaidReturnToPath();
+  function buildCurrentReturnPath() {
+    const qs = new URLSearchParams();
+    if (scanId) qs.set("scan_id", scanId);
+    const chosenUrl = url || scanUrl || data?.url || "";
+    if (chosenUrl) qs.set("url", chosenUrl);
+    qs.set("scan_type", queryScanType);
+    qs.set("business_type", profile.business_type);
+    qs.set("platform", profile.platform);
+    qs.set("blocked_where", profile.blocked_where);
+    qs.set("has_gmb", String(profile.has_gmb));
+    if (shopDomain.trim()) qs.set("shop", shopDomain.trim());
+    return `/report?${qs.toString()}`;
+  }
+
+  function onConnectGoogle() {
+    const returnTo = buildCurrentReturnPath();
     window.location.href = `/api/google/oauth/start?return_to=${encodeURIComponent(returnTo)}`;
   }
+
+  function onConnectShopify() {
+    const normalized = shopDomain.trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(normalized)) {
+      setConnectError("Enter a valid Shopify domain like store.myshopify.com");
+      return;
+    }
+    const returnTo = buildCurrentReturnPath();
+    window.location.href = `/api/shopify/oauth/start?shop=${encodeURIComponent(normalized)}&return_to=${encodeURIComponent(returnTo)}`;
+  }
+
+  function onStartFullScan() {
+    router.push(buildPaidReturnToPath());
+  }
+
+  useEffect(() => {
+    const ac = new AbortController();
+    async function loadConnections() {
+      try {
+        const res = await fetch("/api/shopify", { signal: ac.signal });
+        const json = (await res.json()) as ConnectionStatusResponse;
+        if (ac.signal.aborted) return;
+        setShopifyConnected(Boolean(json.ok && json.connected));
+        if (json.ok && typeof json.shop === "string" && json.shop) {
+          setShopDomain(json.shop);
+        }
+      } catch {
+        if (!ac.signal.aborted) setShopifyConnected(false);
+      }
+    }
+    void loadConnections();
+    return () => ac.abort();
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -661,16 +728,48 @@ function ReportPageClient() {
   const score = Math.max(0, Math.min(100, data.analysis.risk_score ?? 0));
   const checklistEntries = Object.entries(data.analysis.checklist_results ?? {});
   const pagespeedCards = [
-    { label: "Performance" as const, valueLabel: String(data.pagespeed.performance), rawValue: data.pagespeed.performance },
-    { label: "LCP" as const, valueLabel: data.pagespeed.lcp, rawValue: data.pagespeed.lcp },
-    { label: "CLS" as const, valueLabel: data.pagespeed.cls, rawValue: data.pagespeed.cls },
-    { label: "FID" as const, valueLabel: data.pagespeed.fid, rawValue: data.pagespeed.fid },
+    { label: "Performance" as const, valueLabel: String(data.pagespeed.performance), rawValue: data.pagespeed.performance, hint: data.pagespeed.performance >= 90 ? "Excellent" : data.pagespeed.performance >= 65 ? "Acceptable — but room for improvement" : data.pagespeed.performance > 0 ? "Poor — impacts user trust and GMC reviews" : "" },
+    { label: "LCP" as const, valueLabel: data.pagespeed.lcp, rawValue: data.pagespeed.lcp, hint: (() => { const n = parseMetricNumber(data.pagespeed.lcp); if (n == null) return ""; return n < 2.5 ? "Good (under 2.5s)" : n <= 4 ? "Needs improvement (2.5–4s)" : `Slow (${n}s) — should be under 2.5s`; })() },
+    { label: "CLS" as const, valueLabel: data.pagespeed.cls, rawValue: data.pagespeed.cls, hint: (() => { const n = parseMetricNumber(data.pagespeed.cls); if (n == null) return ""; return n < 0.1 ? "Good (under 0.1)" : n <= 0.25 ? "Needs improvement" : "Poor — layout shifts hurt user experience"; })() },
+    { label: "FID" as const, valueLabel: data.pagespeed.fid, rawValue: data.pagespeed.fid, hint: (() => { const n = parseMetricNumber(data.pagespeed.fid); if (n == null) return ""; return n < 100 ? "Good (under 100ms)" : n <= 300 ? "Needs improvement (100–300ms)" : `Slow (${n}ms) — users feel lag on interactions`; })() },
   ];
 
   const businessFingerprint = data.fingerprint ?? data.crawl.fingerprint ?? null;
   const showBusinessIdentity =
     businessFingerprint &&
     Object.values(businessFingerprint).some((v) => v != null && String(v).trim() !== "");
+  const pagesScanned = data.crawl.pages?.length ?? 0;
+  const internalLinksFound = data.crawl.allLinksFound?.length ?? 0;
+  const quickWins = data.analysis.recommendations.slice(0, isFree ? 5 : 3);
+  const coverageCards = [
+    {
+      label: "Pages scanned",
+      value: String(pagesScanned),
+      hint: pagesScanned > 0 ? "Homepage, policies, contact, and product-related pages where available." : "No readable pages captured.",
+    },
+    {
+      label: "Internal links found",
+      value: String(internalLinksFound),
+      hint: internalLinksFound > 0 ? "Used to discover policies, contact, and product paths." : "Very few internal links were visible to the crawler.",
+    },
+    {
+      label: "HTTPS",
+      value: data.crawl.hasSSL ? "Yes" : "No",
+      hint: data.crawl.hasSSL ? "Secure transport detected." : "No secure HTTPS signal detected on the scanned URL.",
+    },
+    {
+      label: "Public identity fields",
+      value: String(
+        [
+          businessFingerprint?.businessName,
+          businessFingerprint?.email,
+          businessFingerprint?.phone,
+          businessFingerprint?.address,
+        ].filter(Boolean).length
+      ),
+      hint: "Business name, email, phone, and address detected from public pages.",
+    },
+  ];
 
   return (
     <div dir="ltr" className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -682,7 +781,7 @@ function ReportPageClient() {
               <h1 className="mt-2 break-all text-xl sm:text-2xl font-bold">{scanUrl || data.url || "—"}</h1>
               <div className="mt-4 flex flex-wrap gap-3">
                 <span className="inline-flex items-center rounded-full border border-indigo-500/25 bg-indigo-500/10 px-4 py-2 text-sm font-semibold text-indigo-200">
-                  {isFree ? "FREE SCAN" : "PAID FULL SCAN"}
+                  {isFree ? "FREE PUBLIC SCAN" : "PAID FULL SCAN"}
                 </span>
                 {!isFree ? (
                   <span className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-zinc-300">
@@ -742,15 +841,55 @@ function ReportPageClient() {
           <div className="mt-6 rounded-3xl border border-indigo-500/25 bg-indigo-500/10 p-6">
             <h2 className="text-xl font-bold text-indigo-100">Upgrade to Full Scan — $99</h2>
             <p className="mt-2 text-zinc-200/90">
-              Unlock Google + Shopify signals, full 77-rule analysis, and channel consistency diagnostics.
+              Unlock real Google evidence, optional Shopify store data, the full 77-rule engine, and cross-source consistency diagnostics.
             </p>
-            <button
-              type="button"
-              onClick={onConnectGoogleAndShopify}
-              className="mt-4 h-11 px-5 rounded-xl font-semibold bg-indigo-500 hover:bg-indigo-400 text-zinc-950 transition-colors"
-            >
-              Connect Google & Shopify for full analysis
-            </button>
+            <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
+              <span className={`rounded-full border px-3 py-1 ${data.google_connected || googleConnectedParam ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-100" : "border-white/10 bg-white/[0.04] text-zinc-300"}`}>
+                Google: {data.google_connected || googleConnectedParam ? "Connected" : "Required"}
+              </span>
+              <span className={`rounded-full border px-3 py-1 ${shopifyConnected ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-100" : "border-white/10 bg-white/[0.04] text-zinc-300"}`}>
+                Shopify: {shopifyConnected ? "Connected" : "Optional"}
+              </span>
+            </div>
+            <div className="mt-4 flex flex-col gap-3">
+              <button
+                type="button"
+                onClick={onConnectGoogle}
+                className="h-11 px-5 rounded-xl font-semibold bg-indigo-500 hover:bg-indigo-400 text-zinc-950 transition-colors"
+              >
+                {data.google_connected || googleConnectedParam ? "Reconnect Google" : "Connect Google"}
+              </button>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <input
+                  type="text"
+                  value={shopDomain}
+                  onChange={(e) => setShopDomain(e.target.value)}
+                  placeholder="store.myshopify.com"
+                  className="h-11 flex-1 rounded-xl border border-white/10 bg-black/20 px-4 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
+                />
+                <button
+                  type="button"
+                  onClick={onConnectShopify}
+                  className="h-11 rounded-xl border border-white/15 bg-white/[0.05] px-5 font-semibold text-zinc-100 hover:bg-white/[0.1] transition-colors"
+                >
+                  {shopifyConnected ? "Reconnect Shopify" : "Connect Shopify"}
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={onStartFullScan}
+                disabled={!data.google_connected && !googleConnectedParam}
+                className={[
+                  "h-11 rounded-xl px-5 font-semibold transition-colors",
+                  !data.google_connected && !googleConnectedParam
+                    ? "bg-white/10 text-zinc-400 cursor-not-allowed"
+                    : "bg-white text-zinc-950 hover:bg-zinc-200",
+                ].join(" ")}
+              >
+                Start Full Scan
+              </button>
+              {connectError ? <p className="text-sm text-red-300">{connectError}</p> : null}
+            </div>
           </div>
         ) : null}
 
@@ -764,15 +903,54 @@ function ReportPageClient() {
             Google connection warning: {googleErrorParam}
           </div>
         ) : null}
+        {shopifyConnectedParam ? (
+          <div className="mt-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+            Shopify connected successfully. Full scan can now include store-side data.
+          </div>
+        ) : null}
+        {shopifyErrorParam ? (
+          <div className="mt-6 rounded-2xl border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-100">
+            Shopify connection warning: {shopifyErrorParam}
+          </div>
+        ) : null}
 
         <div className="mt-7 rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:p-7">
-          <h2 className="text-lg sm:text-xl font-bold">Executive Summary</h2>
+          <h2 className="text-lg sm:text-xl font-bold">
+            {isFree ? "Public Scan Summary" : "Executive Summary"}
+          </h2>
           <p className="mt-3 text-sm sm:text-base text-zinc-100/90">{data.analysis.headline}</p>
         </div>
 
+        {isFree ? (
+          <div className="mt-7 rounded-3xl border border-cyan-500/25 bg-cyan-500/[0.06] p-6 sm:p-7">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg sm:text-xl font-bold text-cyan-100">Public Scan Coverage</h2>
+                <p className="mt-2 text-sm text-zinc-300">
+                  What the free scanner actually collected before generating recommendations.
+                </p>
+              </div>
+              <span className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1 text-xs font-semibold text-cyan-100">
+                Crawl + PageSpeed
+              </span>
+            </div>
+            <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+              {coverageCards.map((card) => (
+                <div key={card.label} className="rounded-2xl border border-white/10 bg-black/20 px-4 py-4">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{card.label}</p>
+                  <p className="mt-2 text-3xl font-extrabold text-white">{card.value}</p>
+                  <p className="mt-2 text-xs leading-relaxed text-zinc-300">{card.hint}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         <div className="mt-7 rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:p-7">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg sm:text-xl font-bold text-red-200">Critical Findings</h2>
+            <h2 className="text-lg sm:text-xl font-bold text-red-200">
+              {isFree ? "Top Public Findings" : "Critical Findings"}
+            </h2>
             <span className="text-xs text-red-300 border border-red-500/30 bg-red-500/10 rounded-full px-3 py-1 font-semibold">
               {findings.length} items
             </span>
@@ -801,6 +979,33 @@ function ReportPageClient() {
             ))}
           </div>
         </div>
+
+        {quickWins.length > 0 ? (
+          <div className="mt-7 rounded-3xl border border-emerald-500/25 bg-emerald-500/[0.06] p-6 sm:p-7">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg sm:text-xl font-bold text-emerald-100">
+                  {isFree ? "Recommended Quick Wins" : "Priority Recommendations"}
+                </h2>
+                <p className="mt-2 text-sm text-zinc-300">
+                  {isFree
+                    ? "These are the highest-leverage improvements based on public site signals."
+                    : "Next steps to reduce risk and improve account readiness."}
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {quickWins.map((item) => (
+                <div key={`${item.item_id}-${item.title}`} className="rounded-2xl border border-white/10 bg-black/20 p-5">
+                  <p className="text-sm font-semibold text-emerald-100">{item.title}</p>
+                  <p className="mt-3 text-sm text-zinc-200/90">{item.why}</p>
+                  <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">Benefit</p>
+                  <p className="mt-1 text-sm text-zinc-300">{item.benefit}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         {isFree ? (
           <div className="mt-7 grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -892,10 +1097,24 @@ function ReportPageClient() {
                     <span className={`h-2 w-2 rounded-full ${cls.dot}`} />
                   </div>
                   <p className="mt-3 text-3xl font-extrabold text-zinc-100">{m.valueLabel}</p>
+                  {m.hint ? <p className={`mt-2 text-xs ${cls.text} leading-relaxed`}>{m.hint}</p> : null}
                 </div>
               );
             })}
           </div>
+          {data.pagespeed.opportunities && data.pagespeed.opportunities.length > 0 && data.pagespeed.opportunities[0] !== "No major optimization opportunities detected." ? (
+            <div className="mt-5">
+              <p className="text-xs text-zinc-400 uppercase tracking-wide font-bold">Top Optimization Opportunities</p>
+              <ul className="mt-2 space-y-1.5">
+                {data.pagespeed.opportunities.map((opp, i) => (
+                  <li key={i} className="flex items-start gap-2 text-sm text-zinc-200/90">
+                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-yellow-400 shrink-0" />
+                    {opp}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

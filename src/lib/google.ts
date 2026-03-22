@@ -1,5 +1,10 @@
 import axios from "axios";
 import crypto from "crypto";
+import {
+  deleteConnectedAccount,
+  getConnectedAccount,
+  upsertConnectedAccount,
+} from "@/lib/connection-store";
 
 export const GOOGLE_OAUTH_STATE_COOKIE = "gmc_google_oauth_state";
 export const GOOGLE_TOKENS_COOKIE = "gmc_google_tokens";
@@ -297,5 +302,64 @@ export async function fetchAllGoogleConnectedData(
   ]);
 
   return { merchant_center, google_ads, gmb };
+}
+
+const GOOGLE_ACCOUNT_IDENTIFIER = "primary";
+
+export async function upsertGoogleTokensForUser(
+  userId: string,
+  tokens: GoogleOAuthTokens
+): Promise<boolean> {
+  return upsertConnectedAccount({
+    user_id: userId,
+    provider: "google",
+    account_identifier: GOOGLE_ACCOUNT_IDENTIFIER,
+    access_token: tokens.access_token,
+    refresh_token: tokens.refresh_token ?? null,
+    token_expires_at: new Date(tokens.expires_at).toISOString(),
+    metadata: {
+      token_type: tokens.token_type ?? null,
+      scope: tokens.scope ?? null,
+    },
+  });
+}
+
+export async function getGoogleTokensForUser(userId: string): Promise<GoogleOAuthTokens | null> {
+  const row = await getConnectedAccount(userId, "google", GOOGLE_ACCOUNT_IDENTIFIER);
+  if (!row?.access_token || !row.token_expires_at) return null;
+  const metadata = row.metadata ?? {};
+  return {
+    access_token: row.access_token,
+    refresh_token: row.refresh_token ?? undefined,
+    expires_at: new Date(row.token_expires_at).getTime(),
+    token_type: typeof metadata.token_type === "string" ? metadata.token_type : undefined,
+    scope: typeof metadata.scope === "string" ? metadata.scope : undefined,
+  };
+}
+
+export async function deleteGoogleConnectionForUser(userId: string): Promise<boolean> {
+  return deleteConnectedAccount(userId, "google", GOOGLE_ACCOUNT_IDENTIFIER);
+}
+
+export async function fetchAllGoogleConnectedDataForUser(userId: string): Promise<{
+  connected: boolean;
+  tokens: GoogleOAuthTokens | null;
+  data: GoogleConnectedData | null;
+}> {
+  let tokens = await getGoogleTokensForUser(userId);
+  if (!tokens?.access_token) {
+    return { connected: false, tokens: null, data: null };
+  }
+
+  if (Date.now() >= tokens.expires_at) {
+    if (!tokens.refresh_token) {
+      return { connected: false, tokens: null, data: null };
+    }
+    tokens = await refreshGoogleAccessToken(tokens.refresh_token);
+    await upsertGoogleTokensForUser(userId, tokens);
+  }
+
+  const data = await fetchAllGoogleConnectedData(tokens.access_token);
+  return { connected: true, tokens, data };
 }
 

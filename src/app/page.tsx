@@ -27,10 +27,10 @@ export default function Home() {
             <div className="flex flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
               <div className="max-w-2xl">
                 <h1 className="text-3xl sm:text-4xl lg:text-5xl font-bold leading-tight tracking-tight">
-                  Find Out Why Google Banned You — And Fix It
+                  Scan The Site For Free. Diagnose The Real Problem In Full.
                 </h1>
                 <p className="mt-4 text-zinc-300 text-lg sm:text-xl leading-relaxed">
-                  Smart scan of 77 Google Merchant Center &amp; Google Ads compliance rules
+                  Start with public website intelligence, PageSpeed, and evidence-backed recommendations. Upgrade to connected Google + Shopify analysis when you need the real compliance diagnosis.
                 </p>
 
                 <div className="mt-7 flex flex-col sm:flex-row gap-3 sm:items-stretch">
@@ -56,7 +56,7 @@ export default function Home() {
                     {hasError ? (
                       <p className="mt-2 text-sm text-red-400">Please enter a URL to scan for free.</p>
                     ) : (
-                      <p className="mt-2 text-sm text-zinc-400">Get basic results in minutes.</p>
+                      <p className="mt-2 text-sm text-zinc-400">Free scan first. Connected diagnosis next.</p>
                     )}
                   </div>
 
@@ -77,15 +77,15 @@ export default function Home() {
                 <div className="mt-6 flex flex-wrap gap-3 text-sm text-zinc-300">
                   <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1">
                     <span className="h-2 w-2 rounded-full bg-emerald-400" />
-                    PageSpeed check
+                    PageSpeed explained
                   </span>
                   <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1">
                     <span className="h-2 w-2 rounded-full bg-indigo-400" />
-                    Basic crawl
+                    Public site crawl
                   </span>
                   <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1">
                     <span className="h-2 w-2 rounded-full bg-amber-400" />
-                    3 findings
+                    Upgrade to 77-rule diagnosis
                   </span>
                 </div>
               </div>
@@ -98,19 +98,19 @@ export default function Home() {
                       <span className="mt-0.5 h-5 w-5 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 flex items-center justify-center text-xs">
                         ✓
                       </span>
-                      <span>PageSpeed + fix tips</span>
+                      <span>PageSpeed with plain-English explanations</span>
                     </li>
                     <li className="flex gap-3">
                       <span className="mt-0.5 h-5 w-5 rounded-full bg-indigo-500/20 border border-indigo-500/30 text-indigo-200 flex items-center justify-center text-xs">
                         ✓
                       </span>
-                      <span>Basic crawl for common issues</span>
+                      <span>Public crawl for identity, policies, and trust signals</span>
                     </li>
                     <li className="flex gap-3">
                       <span className="mt-0.5 h-5 w-5 rounded-full bg-amber-500/20 border border-amber-500/30 text-amber-200 flex items-center justify-center text-xs">
                         ✓
                       </span>
-                      <span>3 accurate findings with next steps</span>
+                      <span>Evidence-backed findings and quick wins</span>
                     </li>
                   </ul>
                 </div>
@@ -145,13 +145,13 @@ export default function Home() {
                   <span className="mt-0.5 h-6 w-6 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-200 flex items-center justify-center text-xs font-bold">
                     ✓
                   </span>
-                  <span>PageSpeed + basic crawl</span>
+                  <span>Public scan: crawl, identity, trust, and speed</span>
                 </li>
                 <li className="flex gap-3">
                   <span className="mt-0.5 h-6 w-6 rounded-xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-200 flex items-center justify-center text-xs font-bold">
                     ✓
                   </span>
-                  <span>3 accurate findings</span>
+                  <span>Evidence-backed findings + quick wins</span>
                 </li>
               </ul>
 
@@ -179,7 +179,7 @@ export default function Home() {
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <p className="text-sm text-zinc-400">Plan</p>
-                    <h3 className="text-2xl font-bold mt-1">Pro</h3>
+                    <h3 className="text-2xl font-bold mt-1">Full Diagnosis</h3>
                   </div>
                   <div className="text-right">
                     <p className="text-3xl font-extrabold">$99</p>
@@ -192,36 +192,35 @@ export default function Home() {
                     <span className="mt-0.5 h-6 w-6 rounded-xl bg-indigo-500/20 border border-indigo-500/40 text-indigo-200 flex items-center justify-center text-xs font-bold">
                       ✓
                     </span>
-                    <span>Full 77-rule compliance analysis</span>
+                    <span>Connected Google account evidence</span>
                   </li>
                   <li className="flex gap-3">
                     <span className="mt-0.5 h-6 w-6 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-200 flex items-center justify-center text-xs font-bold">
                       ✓
                     </span>
-                    <span>AI-powered report + recommendations</span>
+                    <span>Shopify store comparison and policy checks</span>
                   </li>
                   <li className="flex gap-3">
                     <span className="mt-0.5 h-6 w-6 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-200 flex items-center justify-center text-xs font-bold">
                       ✓
                     </span>
-                    <span>Downloadable PDF report</span>
+                    <span>Full 77-rule compliance diagnosis with repair guidance</span>
                   </li>
                 </ul>
 
                 <button
                   type="button"
-                  disabled
+                  onClick={onScanFree}
                   className={[
                     "mt-6 w-full h-12 rounded-xl font-semibold",
-                    "bg-white/10 text-zinc-200",
-                    "border border-white/15",
-                    "cursor-not-allowed",
+                    "bg-white text-zinc-950 hover:bg-zinc-200",
+                    "transition-colors",
                   ].join(" ")}
                 >
-                  Coming Soon: Full Scan
+                  Start With Free Scan
                 </button>
                 <p className="mt-3 text-center text-xs text-zinc-500">
-                  For now, only the free scan is available.
+                  The onboarding flow lets you continue into the connected full scan setup.
                 </p>
               </div>
             </div>
@@ -229,7 +228,7 @@ export default function Home() {
         </div>
 
         <footer className="mt-10 sm:mt-14 text-xs text-zinc-500 text-center">
-          Built with Tailwind CSS only. No external UI libraries.
+          Agency-grade public scan first. Connected diagnosis when you are ready.
         </footer>
       </div>
     </div>

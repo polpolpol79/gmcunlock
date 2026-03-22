@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
+import { getAppUserIdFromRequest } from "@/lib/app-session";
 import { createPaidScanToken } from "@/lib/payment-gate";
-import { readGoogleTokensFromRequest } from "@/lib/google";
+import { getGoogleTokensForUser } from "@/lib/google";
 import { consumeRateLimit, getClientKey } from "@/lib/rate-limit";
 
 export async function POST(req: Request) {
@@ -18,7 +19,12 @@ export async function POST(req: Request) {
       );
     }
 
-    const googleTokens = readGoogleTokensFromRequest(req);
+    const userId = getAppUserIdFromRequest(req);
+    if (!userId) {
+      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    }
+
+    const googleTokens = await getGoogleTokensForUser(userId);
     if (!googleTokens?.access_token) {
       return NextResponse.json(
         { ok: false, error: "Google connection required before paid scan." },

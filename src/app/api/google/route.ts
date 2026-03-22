@@ -1,15 +1,12 @@
 import { NextResponse } from "next/server";
-import {
-  GOOGLE_TOKENS_COOKIE,
-  parseGoogleTokensCookie,
-  readCookieValueFromHeader,
-} from "@/lib/google";
+import { getAppUserIdFromRequest } from "@/lib/app-session";
+import { getGoogleTokensForUser } from "@/lib/google";
 
 type Json = Record<string, unknown>;
 
 export async function GET(req: Request): Promise<NextResponse<Json>> {
-  const raw = readCookieValueFromHeader(req.headers.get("cookie"), GOOGLE_TOKENS_COOKIE);
-  const connected = !!(raw && parseGoogleTokensCookie(raw));
+  const userId = getAppUserIdFromRequest(req);
+  const connected = userId ? Boolean(await getGoogleTokensForUser(userId)) : false;
   return NextResponse.json({
     ok: true,
     route: "google",

@@ -1,11 +1,17 @@
 import { NextResponse } from "next/server";
-import { getScanResultById } from "@/lib/scan-store";
+import { getAppUserIdFromRequest } from "@/lib/app-session";
+import { getScanResultForUser } from "@/lib/scan-store";
 
 export async function GET(
   _req: Request,
   context: { params: { scanId: string } }
 ) {
   try {
+    const userId = getAppUserIdFromRequest(_req);
+    if (!userId) {
+      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    }
+
     const scanId = context.params.scanId?.trim();
     if (!scanId) {
       return NextResponse.json(
@@ -14,7 +20,7 @@ export async function GET(
       );
     }
 
-    const row = await getScanResultById(scanId);
+    const row = await getScanResultForUser(scanId, userId);
     if (!row) {
       return NextResponse.json(
         { ok: false, error: "Scan not found" },

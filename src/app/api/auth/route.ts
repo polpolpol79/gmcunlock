@@ -1,23 +1,23 @@
 import { NextResponse } from "next/server";
+import { applyAppSessionCookie, ensureAppUserSession } from "@/lib/app-session";
 
-type Json = Record<string, unknown>;
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-export async function GET(): Promise<NextResponse<Json>> {
-  return NextResponse.json({
+export async function GET(req: Request) {
+  const session = await ensureAppUserSession(req);
+  const res = NextResponse.json({
     ok: true,
-    route: "auth",
-    message: "Auth API is not implemented yet.",
+    data: {
+      user_id: session.userId,
+      session_created: session.isNew,
+    },
   });
+  applyAppSessionCookie(res, req, session);
+  return res;
 }
 
-export async function POST(): Promise<NextResponse<Json>> {
-  return NextResponse.json(
-    {
-      ok: false,
-      route: "auth",
-      error: "Not implemented",
-    },
-    { status: 501 }
-  );
+export async function POST(req: Request) {
+  return GET(req);
 }
 

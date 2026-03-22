@@ -83,7 +83,7 @@ export async function getPageSpeedData(url: string): Promise<PageSpeedData> {
       key: apiKey,
       strategy: "mobile",
     },
-    timeout: 30000,
+    timeout: 15000,
   });
 
   const lighthouse = response.data.lighthouseResult;

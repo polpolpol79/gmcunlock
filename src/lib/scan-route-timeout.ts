@@ -11,10 +11,10 @@ export const SCAN_ROUTE_BUDGET_MS =
 
 export class ScanTimeoutError extends Error {
   override name = "ScanTimeoutError";
-  constructor() {
-    super(
-      `Scan exceeded maximum time budget (${SCAN_ROUTE_BUDGET_MS / 1000}s). Please try again.`
-    );
+  /** @param budgetMs if omitted, uses {@link SCAN_ROUTE_BUDGET_MS} for the message */
+  constructor(budgetMs?: number) {
+    const ms = budgetMs ?? SCAN_ROUTE_BUDGET_MS;
+    super(`Scan exceeded maximum time budget (${ms / 1000}s). Please try again.`);
   }
 }
 
@@ -26,7 +26,7 @@ export async function withScanTimeBudget<T>(maxMs: number, fn: () => Promise<T>)
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new ScanTimeoutError()), maxMs);
+    timeoutId = setTimeout(() => reject(new ScanTimeoutError(maxMs)), maxMs);
   });
 
   try {
@@ -36,11 +36,11 @@ export async function withScanTimeBudget<T>(maxMs: number, fn: () => Promise<T>)
   }
 }
 
-export function scanTimeoutResponse(): NextResponse {
+export function scanTimeoutResponse(budgetMs: number = SCAN_ROUTE_BUDGET_MS): NextResponse {
   return NextResponse.json(
     {
       ok: false,
-      error: `Scan exceeded maximum time budget (${SCAN_ROUTE_BUDGET_MS / 1000}s). Please try again.`,
+      error: `Scan exceeded maximum time budget (${budgetMs / 1000}s). Please try again.`,
     },
     { status: 504 }
   );

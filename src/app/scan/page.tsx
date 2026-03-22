@@ -1,12 +1,15 @@
 "use client";
 
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 type BusinessType = "ecommerce" | "service_provider" | "leads_only" | "other";
 type Platform = "shopify" | "woocommerce" | "wix" | "other";
 type BlockedWhere = "merchant_center" | "google_ads" | "both" | "proactive";
 type HasGmb = true | false | null;
+type ConnectionStatusResponse =
+  | { ok: true; connected?: boolean; shop?: string | null }
+  | { ok: false; error?: string };
 
 type Answers = {
   business_type: BusinessType | "";
@@ -62,17 +65,88 @@ function ScanPageClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const urlParam = useMemo(() => searchParams.get("url")?.trim() ?? "", [searchParams]);
+  const queryAnswers = useMemo<Answers>(
+    () => ({
+      business_type:
+        searchParams.get("business_type") === "ecommerce" ||
+        searchParams.get("business_type") === "service_provider" ||
+        searchParams.get("business_type") === "leads_only" ||
+        searchParams.get("business_type") === "other"
+          ? (searchParams.get("business_type") as BusinessType)
+          : "",
+      platform:
+        searchParams.get("platform") === "shopify" ||
+        searchParams.get("platform") === "woocommerce" ||
+        searchParams.get("platform") === "wix" ||
+        searchParams.get("platform") === "other"
+          ? (searchParams.get("platform") as Platform)
+          : "",
+      blocked_where:
+        searchParams.get("blocked_where") === "merchant_center" ||
+        searchParams.get("blocked_where") === "google_ads" ||
+        searchParams.get("blocked_where") === "both" ||
+        searchParams.get("blocked_where") === "proactive"
+          ? (searchParams.get("blocked_where") as BlockedWhere)
+          : "",
+      has_gmb:
+        searchParams.get("has_gmb") === "true"
+          ? true
+          : searchParams.get("has_gmb") === "false"
+            ? false
+            : searchParams.get("has_gmb") === "null"
+              ? null
+              : undefined,
+    }),
+    [searchParams]
+  );
+  const hasFullProfile =
+    queryAnswers.business_type !== "" &&
+    queryAnswers.platform !== "" &&
+    queryAnswers.blocked_where !== "" &&
+    queryAnswers.has_gmb !== undefined;
 
   const [onboardingStep, setOnboardingStep] = useState<1 | 2 | 3 | 4>(1);
-  const [phase, setPhase] = useState<"onboarding" | "plan">("onboarding");
+  const [phase, setPhase] = useState<"onboarding" | "plan">(hasFullProfile ? "plan" : "onboarding");
   const [attemptedContinue, setAttemptedContinue] = useState(false);
 
-  const [answers, setAnswers] = useState<Answers>({
-    business_type: "",
-    platform: "",
-    blocked_where: "",
-    has_gmb: undefined,
-  });
+  const [answers, setAnswers] = useState<Answers>(queryAnswers);
+  const [googleConnected, setGoogleConnected] = useState(false);
+  const [shopifyConnected, setShopifyConnected] = useState(false);
+  const [shopDomain, setShopDomain] = useState(searchParams.get("shop")?.trim() ?? "");
+  const [setupBusy, setSetupBusy] = useState(false);
+  const [setupError, setSetupError] = useState("");
+
+  useEffect(() => {
+    setAnswers(queryAnswers);
+    if (hasFullProfile) setPhase("plan");
+  }, [queryAnswers, hasFullProfile]);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    async function loadConnections() {
+      try {
+        const [googleRes, shopifyRes] = await Promise.all([
+          fetch("/api/google", { signal: ac.signal }),
+          fetch("/api/shopify", { signal: ac.signal }),
+        ]);
+        const googleJson = (await googleRes.json()) as ConnectionStatusResponse;
+        const shopifyJson = (await shopifyRes.json()) as ConnectionStatusResponse;
+        if (ac.signal.aborted) return;
+        setGoogleConnected(Boolean(googleJson.ok && googleJson.connected));
+        setShopifyConnected(Boolean(shopifyJson.ok && shopifyJson.connected));
+        if (shopifyJson.ok && typeof shopifyJson.shop === "string" && shopifyJson.shop) {
+          setShopDomain(shopifyJson.shop);
+        }
+      } catch {
+        if (!ac.signal.aborted) {
+          setGoogleConnected(false);
+          setShopifyConnected(false);
+        }
+      }
+    }
+    void loadConnections();
+    return () => ac.abort();
+  }, []);
 
   function canContinueForStep(step: typeof onboardingStep) {
     if (step === 1) return answers.business_type !== "";
@@ -107,6 +181,56 @@ function ScanPageClient() {
       },
     });
     router.push(`/report?${query}`);
+  }
+
+  function buildSetupQuery(scanType: "free" | "paid") {
+    const qs = new URLSearchParams();
+    qs.set("url", urlParam);
+    qs.set("scan_type", scanType);
+    qs.set("business_type", String(answers.business_type || "other"));
+    qs.set("platform", String(answers.platform || "other"));
+    qs.set("blocked_where", String(answers.blocked_where || "proactive"));
+    qs.set("has_gmb", String(answers.has_gmb ?? null));
+    if (shopDomain.trim()) qs.set("shop", shopDomain.trim());
+    qs.set("phase", "plan");
+    return qs.toString();
+  }
+
+  function connectGoogle() {
+    window.location.href = `/api/google/oauth/start?return_to=${encodeURIComponent(`/scan?${buildSetupQuery("paid")}`)}`;
+  }
+
+  function connectShopify() {
+    const normalized = shopDomain.trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(normalized)) {
+      setSetupError("Enter a valid Shopify domain like store.myshopify.com");
+      return;
+    }
+    window.location.href = `/api/shopify/oauth/start?shop=${encodeURIComponent(normalized)}&return_to=${encodeURIComponent(`/scan?${buildSetupQuery("paid")}`)}`;
+  }
+
+  async function startPaidScan() {
+    setSetupBusy(true);
+    setSetupError("");
+    try {
+      if (!googleConnected) {
+        throw new Error("Connect Google before starting the full scan.");
+      }
+      router.push(`/report?${buildReportQuery({
+        url: urlParam,
+        scanType: "paid",
+        answers: {
+          business_type: (answers.business_type || "other") as BusinessType,
+          platform: (answers.platform || "other") as Platform,
+          blocked_where: (answers.blocked_where || "proactive") as BlockedWhere,
+          has_gmb: (answers.has_gmb ?? null) as HasGmb,
+        },
+      })}${shopDomain.trim() ? `&shop=${encodeURIComponent(shopDomain.trim())}` : ""}`);
+    } catch (error) {
+      setSetupError(error instanceof Error ? error.message : "Could not start full scan.");
+    } finally {
+      setSetupBusy(false);
+    }
   }
 
   const onboardingProgressPct = onboardingStep * 25;
@@ -275,7 +399,7 @@ function ScanPageClient() {
           <div className="rounded-3xl border border-white/10 bg-zinc-900/30 p-6 sm:p-8">
             <h2 className="text-2xl font-bold">Choose your scan type</h2>
             <p className="mt-2 text-sm text-zinc-400">
-              Free scan includes PageSpeed + basic crawl + top 3 critical findings.
+              Free scan gives public-site intelligence. Full scan adds real Google + Shopify data and the full 77-rule engine.
             </p>
             {!urlParam ? (
               <p className="mt-3 text-sm text-red-300">
@@ -297,23 +421,75 @@ function ScanPageClient() {
               >
                 <p className="text-lg font-bold text-emerald-200">Scan for Free</p>
                 <p className="mt-2 text-sm text-zinc-200/90">
-                  Run a limited compliance check and get the top risks instantly.
+                  Run a public scan with crawl coverage, PageSpeed, evidence-backed findings, and quick wins.
                 </p>
               </button>
 
-              <button
-                type="button"
-                disabled
-                className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 text-left opacity-70 cursor-not-allowed"
-              >
-                <p className="text-lg font-bold text-zinc-200">Full Scan — $99</p>
-                <p className="mt-2 text-sm text-zinc-400">
-                  Includes Google OAuth + Shopify + full 77-rule analysis.
-                </p>
-                <span className="mt-4 inline-flex rounded-full border border-white/15 px-3 py-1 text-xs text-zinc-300">
-                  Coming soon
-                </span>
-              </button>
+              <div className="rounded-2xl border border-indigo-500/25 bg-indigo-500/10 p-5 text-left">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-lg font-bold text-indigo-100">Full Scan — $99</p>
+                    <p className="mt-2 text-sm text-zinc-200/90">
+                      Connect the real Google account and Shopify store for the serious compliance diagnosis.
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-white/15 bg-black/20 px-3 py-1 text-xs text-zinc-200">
+                    Launch mode
+                  </span>
+                </div>
+
+                <div className="mt-5 grid grid-cols-1 gap-3">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className={`rounded-full border px-3 py-1 ${googleConnected ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200" : "border-white/10 bg-white/[0.04] text-zinc-300"}`}>
+                      Google: {googleConnected ? "Connected" : "Not connected"}
+                    </span>
+                    <span className={`rounded-full border px-3 py-1 ${shopifyConnected ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200" : "border-white/10 bg-white/[0.04] text-zinc-300"}`}>
+                      Shopify: {shopifyConnected ? "Connected" : "Optional"}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <button
+                      type="button"
+                      onClick={connectGoogle}
+                      className="h-11 rounded-xl bg-white text-zinc-950 px-4 font-semibold hover:bg-zinc-200 transition-colors"
+                    >
+                      {googleConnected ? "Reconnect Google" : "Connect Google"}
+                    </button>
+                    <div className="flex-1 flex flex-col gap-2 sm:flex-row">
+                      <input
+                        type="text"
+                        value={shopDomain}
+                        onChange={(e) => setShopDomain(e.target.value)}
+                        placeholder="store.myshopify.com"
+                        className="h-11 flex-1 rounded-xl border border-white/10 bg-black/20 px-4 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
+                      />
+                      <button
+                        type="button"
+                        onClick={connectShopify}
+                        className="h-11 rounded-xl border border-white/15 bg-white/[0.05] px-4 font-semibold text-zinc-100 hover:bg-white/[0.09] transition-colors"
+                      >
+                        {shopifyConnected ? "Reconnect Shopify" : "Connect Shopify"}
+                      </button>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={startPaidScan}
+                    disabled={!urlParam || !googleConnected || setupBusy}
+                    className={[
+                      "h-12 rounded-xl font-semibold transition-colors",
+                      !urlParam || !googleConnected || setupBusy
+                        ? "bg-white/10 text-zinc-400 cursor-not-allowed"
+                        : "bg-indigo-500 text-zinc-950 hover:bg-indigo-400",
+                    ].join(" ")}
+                  >
+                    {setupBusy ? "Preparing..." : "Start Full Scan"}
+                  </button>
+                  {setupError ? <p className="text-sm text-red-300">{setupError}</p> : null}
+                </div>
+              </div>
             </div>
           </div>
         )}

@@ -5,6 +5,7 @@ export type ScanJobStatus = "queued" | "running" | "done" | "error";
 
 export type StoredScanRow = {
   id: string;
+  user_id?: string | null;
   url: string;
   scan_type?: "free" | "paid";
   google_connected?: boolean;
@@ -79,6 +80,7 @@ function getAdminClientSafe(): ReturnType<typeof getSupabaseAdminClient> | null 
  * or progress columns are missing (use synchronous saveScanResult instead).
  */
 export async function createPendingScanResult(input: {
+  user_id?: string | null;
   url: string;
   scan_type: "free" | "paid";
   google_connected?: boolean;
@@ -92,6 +94,7 @@ export async function createPendingScanResult(input: {
 
   const now = new Date().toISOString();
   const row = {
+    user_id: input.user_id ?? null,
     url: input.url,
     scan_type: input.scan_type,
     google_connected: input.google_connected ?? false,
@@ -108,9 +111,16 @@ export async function createPendingScanResult(input: {
 
   for (const table of TABLE_CANDIDATES) {
     const tableClient = client.from(table as never) as any;
-    const attempt = await tableClient.insert(row).select("id").single();
-    if (!attempt.error && attempt.data?.id) {
-      return attempt.data.id as string;
+    const attemptWithUser = await tableClient.insert(row).select("id").single();
+    if (!attemptWithUser.error && attemptWithUser.data?.id) {
+      return attemptWithUser.data.id as string;
+    }
+
+    const legacyRow = { ...row };
+    delete (legacyRow as Record<string, unknown>).user_id;
+    const attemptLegacy = await tableClient.insert(legacyRow).select("id").single();
+    if (!attemptLegacy.error && attemptLegacy.data?.id) {
+      return attemptLegacy.data.id as string;
     }
   }
 
@@ -194,6 +204,7 @@ export async function failScanResult(scanId: string, message: string): Promise<v
 }
 
 export async function saveScanResult(input: {
+  user_id?: string | null;
   url: string;
   scan_type: "free" | "paid";
   google_connected?: boolean;
@@ -211,6 +222,7 @@ export async function saveScanResult(input: {
     // Try with extended columns first.
     const primaryAttempt = await tableClient
       .insert({
+        user_id: input.user_id ?? null,
         url: input.url,
         scan_type: input.scan_type,
         google_connected: input.google_connected ?? false,
@@ -224,6 +236,23 @@ export async function saveScanResult(input: {
 
     if (!primaryAttempt.error && primaryAttempt.data?.id) {
       return primaryAttempt.data.id as string;
+    }
+
+    const legacyPrimaryAttempt = await tableClient
+      .insert({
+        url: input.url,
+        scan_type: input.scan_type,
+        google_connected: input.google_connected ?? false,
+        profile: input.profile,
+        pagespeed: input.pagespeed,
+        crawl: input.crawl,
+        analysis: input.analysis,
+      })
+      .select("id")
+      .single();
+
+    if (!legacyPrimaryAttempt.error && legacyPrimaryAttempt.data?.id) {
+      return legacyPrimaryAttempt.data.id as string;
     }
 
     // Backward-compatible fallback when columns don't exist yet.
@@ -255,7 +284,7 @@ export async function getScanResultById(scanId: string): Promise<StoredScanRow |
 
     const extendedSelect = await tableClient
       .select(
-        "id,url,scan_type,google_connected,profile,pagespeed,crawl,analysis,created_at,scan_status,scan_phase,scan_phase_detail,scan_error,progress_updated_at"
+        "id,user_id,url,scan_type,google_connected,profile,pagespeed,crawl,analysis,created_at,scan_status,scan_phase,scan_phase_detail,scan_error,progress_updated_at"
       )
       .eq("id", scanId)
       .single();
@@ -264,8 +293,19 @@ export async function getScanResultById(scanId: string): Promise<StoredScanRow |
       return extendedSelect.data as StoredScanRow;
     }
 
+    const legacyExtendedSelect = await tableClient
+      .select(
+        "id,url,scan_type,google_connected,profile,pagespeed,crawl,analysis,created_at,scan_status,scan_phase,scan_phase_detail,scan_error,progress_updated_at"
+      )
+      .eq("id", scanId)
+      .single();
+
+    if (!legacyExtendedSelect.error && legacyExtendedSelect.data) {
+      return legacyExtendedSelect.data as StoredScanRow;
+    }
+
     const primarySelect = await tableClient
-      .select("id,url,scan_type,google_connected,profile,pagespeed,crawl,analysis,created_at")
+      .select("id,user_id,url,scan_type,google_connected,profile,pagespeed,crawl,analysis,created_at")
       .eq("id", scanId)
       .single();
 
@@ -273,8 +313,17 @@ export async function getScanResultById(scanId: string): Promise<StoredScanRow |
       return primarySelect.data as StoredScanRow;
     }
 
+    const legacyPrimarySelect = await tableClient
+      .select("id,url,scan_type,google_connected,profile,pagespeed,crawl,analysis,created_at")
+      .eq("id", scanId)
+      .single();
+
+    if (!legacyPrimarySelect.error && legacyPrimarySelect.data) {
+      return legacyPrimarySelect.data as StoredScanRow;
+    }
+
     const fallbackSelect = await tableClient
-      .select("id,url,profile,pagespeed,crawl,analysis,created_at")
+      .select("id,user_id,url,profile,pagespeed,crawl,analysis,created_at")
       .eq("id", scanId)
       .single();
 
@@ -284,5 +333,15 @@ export async function getScanResultById(scanId: string): Promise<StoredScanRow |
   }
 
   return null;
+}
+
+export async function getScanResultForUser(
+  scanId: string,
+  userId: string
+): Promise<StoredScanRow | null> {
+  const row = await getScanResultById(scanId);
+  if (!row) return null;
+  if (row.user_id && row.user_id !== userId) return null;
+  return row;
 }
 

@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
+import { getAppUserIdFromRequest } from "@/lib/app-session";
 import {
   GOOGLE_OAUTH_RETURN_TO_COOKIE,
   GOOGLE_OAUTH_STATE_COOKIE,
   GOOGLE_TOKENS_COOKIE,
+  deleteGoogleConnectionForUser,
   exchangeCodeForGoogleTokens,
   getGoogleRedirectUri,
-  parseGoogleTokensCookie,
   readCookieValueFromHeader,
-  refreshGoogleAccessToken,
-  serializeGoogleTokens,
+  upsertGoogleTokensForUser,
 } from "@/lib/google";
 
 function getAppBaseUrl(req: Request): string {
@@ -52,6 +52,13 @@ export async function GET(req: Request) {
   }
 
   try {
+    const userId = getAppUserIdFromRequest(req);
+    if (!userId) {
+      return NextResponse.redirect(
+        `${baseUrl}${returnTo}${separator}google_error=${encodeURIComponent("missing_app_session")}`
+      );
+    }
+
     const storedState = readCookieValueFromHeader(
       req.headers.get("cookie"),
       GOOGLE_OAUTH_STATE_COOKIE
@@ -64,6 +71,8 @@ export async function GET(req: Request) {
 
     const redirectUri = getGoogleRedirectUri();
     const tokens = await exchangeCodeForGoogleTokens({ code, redirectUri });
+    await deleteGoogleConnectionForUser(userId);
+    await upsertGoogleTokensForUser(userId, tokens);
 
     const res = NextResponse.redirect(
       `${baseUrl}${returnTo}${separator}google_connected=1`
@@ -76,55 +85,13 @@ export async function GET(req: Request) {
       path: "/",
       maxAge: 0,
     });
-    res.cookies.set(GOOGLE_TOKENS_COOKIE, serializeGoogleTokens(tokens), {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: redirectUri.startsWith("https://"),
-      path: "/",
-      maxAge: 60 * 60 * 24 * 30,
-    });
+    res.cookies.set(GOOGLE_TOKENS_COOKIE, "", { path: "/", maxAge: 0 });
     return res;
   } catch (oauthError) {
     return NextResponse.redirect(
       `${baseUrl}${returnTo}${separator}google_error=${encodeURIComponent(
         oauthError instanceof Error ? oauthError.message : "oauth_failed"
       )}`
-    );
-  }
-}
-
-export async function POST(req: Request) {
-  try {
-    const raw = readCookieValueFromHeader(req.headers.get("cookie"), GOOGLE_TOKENS_COOKIE);
-    if (!raw) {
-      return NextResponse.json({ ok: false, error: "Not connected" }, { status: 401 });
-    }
-
-    const parsed = parseGoogleTokensCookie(raw);
-    if (!parsed?.refresh_token) {
-      return NextResponse.json(
-        { ok: false, error: "No refresh token available" },
-        { status: 400 }
-      );
-    }
-
-    const refreshed = await refreshGoogleAccessToken(parsed.refresh_token);
-    const res = NextResponse.json({ ok: true });
-    res.cookies.set(GOOGLE_TOKENS_COOKIE, serializeGoogleTokens(refreshed), {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: getGoogleRedirectUri().startsWith("https://"),
-      path: "/",
-      maxAge: 60 * 60 * 24 * 30,
-    });
-    return res;
-  } catch (error) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: error instanceof Error ? error.message : "Token refresh failed",
-      },
-      { status: 500 }
     );
   }
 }

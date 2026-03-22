@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { applyAppSessionCookie, ensureAppUserSession } from "@/lib/app-session";
 import {
   GOOGLE_OAUTH_RETURN_TO_COOKIE,
   GOOGLE_OAUTH_STATE_COOKIE,
@@ -15,6 +16,7 @@ function safeReturnTo(input: string | null): string {
 
 export async function GET(req: Request) {
   try {
+    const session = await ensureAppUserSession(req);
     const url = new URL(req.url);
     const returnTo = safeReturnTo(url.searchParams.get("return_to"));
     const state = createGoogleOAuthState();
@@ -36,6 +38,7 @@ export async function GET(req: Request) {
       path: "/",
       maxAge: 60 * 10,
     });
+    applyAppSessionCookie(res, req, session);
     return res;
   } catch (error) {
     const message =

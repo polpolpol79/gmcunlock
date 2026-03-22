@@ -1,16 +1,17 @@
 import { NextResponse } from "next/server";
+import { applyAppSessionCookie, ensureAppUserSession } from "@/lib/app-session";
 import { FullScanRequestSchema } from "@/lib/scan-schemas";
 import {
   completeScanResult,
   createPendingScanResult,
   failScanResult,
-  getScanResultById,
+  getScanResultForUser,
   saveScanResult,
   scheduleScanBackground,
+  type StoredScanRow,
 } from "@/lib/scan-store";
 import { consumeRateLimit, getClientKey } from "@/lib/rate-limit";
 import {
-  SCAN_ROUTE_BUDGET_MS,
   ScanTimeoutError,
   scanTimeoutResponse,
   withScanTimeBudget,
@@ -21,19 +22,20 @@ import {
   normalizeFreeScanInputUrl,
   runFreeScanPipeline,
 } from "@/lib/scan-execute-free";
+import { toSiteFingerprint, type CrawlResult } from "@/lib/crawler";
 import { phaseDetailFor, SCAN_PHASES } from "@/lib/scan-progress-phases";
 
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-function mapRowToFreePayload(row: NonNullable<Awaited<ReturnType<typeof getScanResultById>>>) {
-  const crawl = row.crawl as { fingerprint?: unknown };
+function mapRowToFreePayload(row: StoredScanRow) {
+  const crawl = row.crawl as CrawlResult | null;
   return {
     scan_id: row.id,
     scan_type: "free" as const,
     google_connected: false,
-    fingerprint: crawl?.fingerprint ?? null,
+    fingerprint: crawl ? toSiteFingerprint(crawl) : null,
     pagespeed: row.pagespeed,
     crawl: row.crawl,
     analysis: row.analysis,
@@ -71,8 +73,10 @@ export async function POST(req: Request) {
 
     const url = normalizeFreeScanInputUrl(parsedReq.data.url);
     const profile = parsedReq.data.profile;
+    const session = await ensureAppUserSession(req);
 
     const pendingId = await createPendingScanResult({
+      user_id: session.userId,
       url,
       scan_type: "free",
       google_connected: false,
@@ -105,7 +109,7 @@ export async function POST(req: Request) {
     if (pendingId) {
       const deferred = await scheduleScanBackground(() => runJob(pendingId));
       if (deferred) {
-        return NextResponse.json(
+        const res = NextResponse.json(
           {
             ok: true,
             data: {
@@ -117,10 +121,12 @@ export async function POST(req: Request) {
           },
           { status: 202 }
         );
+        applyAppSessionCookie(res, req, session);
+        return res;
       }
 
       await runJob(pendingId);
-      const row = await getScanResultById(pendingId);
+      const row = await getScanResultForUser(pendingId, session.userId);
       if (!row) {
         return NextResponse.json({ ok: false, error: "Scan finished but result not found." }, { status: 500 });
       }
@@ -130,39 +136,54 @@ export async function POST(req: Request) {
           { status: 500 }
         );
       }
-      return NextResponse.json({ ok: true, data: mapRowToFreePayload(row) });
+      const res = NextResponse.json({ ok: true, data: mapRowToFreePayload(row) });
+      applyAppSessionCookie(res, req, session);
+      return res;
     }
 
-    return await withScanTimeBudget(SCAN_ROUTE_BUDGET_MS, async () => {
-      const result = await runFreeScanPipeline(url, profile, null);
-      const scan_id = await saveScanResult({
-        url,
-        scan_type: "free",
-        google_connected: false,
-        profile,
-        pagespeed: result.pagespeed,
-        crawl: result.crawl,
-        analysis: result.analysis,
-      });
-      if (!scan_id) {
-        console.warn("[scan/free] persisted without scan_id", { url });
-      } else {
-        console.info("[scan/free] completed", { scan_id, url });
-      }
+    /** Free sync scan: 45s budget (PageSpeed + crawl in parallel + Claude). */
+    const FREE_SYNC_SCAN_BUDGET_MS = 45_000;
 
-      return NextResponse.json({
-        ok: true,
-        data: {
-          scan_id,
+    try {
+      return await withScanTimeBudget(FREE_SYNC_SCAN_BUDGET_MS, async () => {
+        const result = await runFreeScanPipeline(url, profile, null);
+        const scan_id = await saveScanResult({
+          user_id: session.userId,
+          url,
           scan_type: "free",
           google_connected: false,
-          fingerprint: result.crawl.fingerprint,
+          profile,
           pagespeed: result.pagespeed,
           crawl: result.crawl,
           analysis: result.analysis,
-        },
+        });
+        if (!scan_id) {
+          console.warn("[scan/free] persisted without scan_id", { url });
+        } else {
+          console.info("[scan/free] completed", { scan_id, url });
+        }
+
+        const res = NextResponse.json({
+          ok: true,
+          data: {
+            scan_id,
+            scan_type: "free",
+            google_connected: false,
+            fingerprint: toSiteFingerprint(result.crawl),
+            pagespeed: result.pagespeed,
+            crawl: result.crawl,
+            analysis: result.analysis,
+          },
+        });
+        applyAppSessionCookie(res, req, session);
+        return res;
       });
-    });
+    } catch (inner) {
+      if (inner instanceof ScanTimeoutError) {
+        return scanTimeoutResponse(FREE_SYNC_SCAN_BUDGET_MS);
+      }
+      throw inner;
+    }
   } catch (error) {
     if (error instanceof ScanTimeoutError) {
       return scanTimeoutResponse();

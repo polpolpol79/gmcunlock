@@ -1,12 +1,17 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getPageSpeedData, type PageSpeedData } from "@/lib/pagespeed";
-import { crawlWebsite, emptyCrawlResult, type CrawlResult } from "@/lib/crawler";
+import {
+  crawlWebsite,
+  emptyCrawlResult,
+  toSiteFingerprint,
+  type CrawlResult,
+} from "@/lib/crawler";
 import {
   buildAnalysisPrompt,
-  getApplicableRules,
-  inferAvailableDataSources,
+  getRelevantItems,
   mapScanProfileToUserProfile,
 } from "@/lib/gmc-checklist";
+import { gatherOsint, formatOsintBlock } from "@/lib/osint";
 import { updateScanProgress } from "@/lib/scan-store";
 import { SCAN_PHASES, phaseDetailFor } from "@/lib/scan-progress-phases";
 import {
@@ -49,6 +54,15 @@ function normalizeChecklistValue(value: unknown): ChecklistResultValue {
   return "unknown";
 }
 
+const SPECULATIVE_RE =
+  /\b(likely|probably|may\s|might\s|could\s|appears?\s+to|seems?\s+to|possibly|presumably|it\s+is\s+possible)\b/i;
+
+function sanitizeEvidence(evidence: string): string {
+  if (!SPECULATIVE_RE.test(evidence)) return evidence;
+  return evidence.replace(SPECULATIVE_RE, "[note: unconfirmed]") +
+    " [warning: speculative language detected — verify manually]";
+}
+
 function parseClaudeJson(raw: string): ClaudeAnalysisOutput {
   const cleaned = raw
     .replace(/^```json\s*/i, "")
@@ -67,6 +81,16 @@ function parseClaudeJson(raw: string): ClaudeAnalysisOutput {
       ? (parsed.checklist_results as Record<string, unknown>)
       : {};
 
+  const rawIssues = Array.isArray(parsed.critical_issues) ? parsed.critical_issues : [];
+  const sanitizedIssues = rawIssues.map((issue: unknown) => {
+    if (!issue || typeof issue !== "object") return issue;
+    const obj = issue as Record<string, unknown>;
+    if (typeof obj.evidence === "string") {
+      return { ...obj, evidence: sanitizeEvidence(obj.evidence) };
+    }
+    return obj;
+  });
+
   const normalized = {
     risk_score: typeof parsed.risk_score === "number" ? parsed.risk_score : 0,
     risk_level:
@@ -80,7 +104,7 @@ function parseClaudeJson(raw: string): ClaudeAnalysisOutput {
       typeof parsed.headline === "string"
         ? parsed.headline
         : "Limited scan completed with available data.",
-    critical_issues: Array.isArray(parsed.critical_issues) ? parsed.critical_issues : [],
+    critical_issues: sanitizedIssues,
     recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : [],
     consistency_issues: Array.isArray(parsed.consistency_issues) ? parsed.consistency_issues : [],
     checklist_results: Object.fromEntries(
@@ -98,45 +122,177 @@ function parseClaudeJson(raw: string): ClaudeAnalysisOutput {
   return ClaudeAnalysisSchema.parse(normalized);
 }
 
-function buildFreeFallback(): ClaudeAnalysisOutput {
+type ClaudeIssue = ClaudeAnalysisOutput["critical_issues"][number];
+
+function buildDataDrivenFallback(
+  crawl: CrawlResult,
+  pagespeed: PageSpeedData
+): ClaudeAnalysisOutput {
+  const issues: ClaudeIssue[] = [];
+  const recommendations: ClaudeAnalysisOutput["recommendations"] = [];
+  const fp = crawl.fingerprint;
+  const pagesScanned = crawl.pages.length;
+  const bundle =
+    crawl.pages.map((p) => `${p.url}\n${p.text}`).join("\n") +
+    crawl.allLinksFound.join(" ");
+  const scannedUrlsList = crawl.pages.map((p) => p.url).join(", ") || "none";
+
+  const FREE_EMAIL_RE = /@(gmail|yahoo|hotmail|outlook|aol|live|icloud)\./i;
+  const hasEmail = Boolean(fp.email?.trim());
+  const emailIsBranded = hasEmail && !FREE_EMAIL_RE.test(fp.email!);
+  const hasPrivacyPolicy = /privacy|פרטיות|מדיניות.{0,5}פרטיות/i.test(bundle);
+  const hasTerms = /terms|conditions|תנאי|תקנון|מדיניות/i.test(bundle);
+  const hasReturns = /return|refund|החזר|החזרות/i.test(bundle);
+  const hasShipping = /shipping|delivery|משלוח|הובלה/i.test(bundle);
+  const hasContactPage = /contact|צור.{0,3}קשר/i.test(bundle);
+
+  if (!crawl.hasSSL) {
+    issues.push({
+      item_id: 21,
+      section: "Checkout & Security",
+      title: "Website is not using HTTPS",
+      problem: "The website URL does not enforce SSL/HTTPS.",
+      evidence: `Final URL: ${crawl.url} — no HTTPS detected.`,
+      fix: "Enable SSL certificate and force HTTPS redirect on all pages.",
+      effort: "quick",
+    });
+    recommendations.push({
+      item_id: 21,
+      title: "Enable HTTPS across the whole site",
+      why: "A secure site is a basic trust signal for users and ad review systems.",
+      benefit: "Improves trust, conversion confidence, and technical readiness.",
+    });
+  }
+
+  if (!hasEmail) {
+    issues.push({
+      item_id: 8,
+      section: "Contact Details",
+      title: "No email address found on the website",
+      problem: "No email address was detected on any scanned page.",
+      evidence: `Scanned ${pagesScanned} pages (${scannedUrlsList}). No email address pattern found in any page text.`,
+      fix: "Add a branded email address (e.g. info@yourdomain.com) to the footer and contact page.",
+      effort: "quick",
+    });
+    recommendations.push({
+      item_id: 8,
+      title: "Add a visible branded email address",
+      why: "Visitors and reviewers expect a clear support channel on the site.",
+      benefit: "Improves transparency and makes the business look more established.",
+    });
+  } else if (!emailIsBranded) {
+    issues.push({
+      item_id: 8,
+      section: "Contact Details",
+      title: "Email is from a free provider, not branded",
+      problem: "The email found uses a free provider instead of the business domain.",
+      evidence: `Found email: ${fp.email} — this is a free email provider, not a branded domain email.`,
+      fix: "Use a branded email address (info@yourdomain.com) instead of a free provider.",
+      effort: "quick",
+    });
+  }
+
+  if (!hasPrivacyPolicy) {
+    issues.push({
+      item_id: 16,
+      section: "Policy Pages",
+      title: "No privacy policy page found",
+      problem: "No privacy policy page was detected among scanned pages or internal links.",
+      evidence: `Scanned ${pagesScanned} pages and ${crawl.allLinksFound.length} internal links. None match 'privacy' or 'פרטיות'.`,
+      fix: "Create a privacy policy page and link to it from the footer navigation.",
+      effort: "quick",
+    });
+    recommendations.push({
+      item_id: 16,
+      title: "Publish a privacy policy in the footer",
+      why: "Privacy transparency is a standard trust signal for ecommerce and lead-gen sites.",
+      benefit: "Reduces friction for visitors and improves overall site credibility.",
+    });
+  }
+
+  if (!hasReturns) {
+    issues.push({
+      item_id: 18,
+      section: "Policy Pages",
+      title: "No returns/refund policy found",
+      problem: "No returns or refund policy was found on the website.",
+      evidence: `Scanned ${pagesScanned} pages. No URL or text matching 'returns', 'refund', 'החזר' found.`,
+      fix: "Add a clear returns & refund policy page with return period, conditions, and process.",
+      effort: "quick",
+    });
+  }
+
+  if (!hasShipping) {
+    issues.push({
+      item_id: 19,
+      section: "Policy Pages",
+      title: "No shipping policy found",
+      problem: "No shipping/delivery policy was found on the website.",
+      evidence: `Scanned ${pagesScanned} pages. No URL or text matching 'shipping', 'delivery', 'משלוח' found.`,
+      fix: "Add a shipping policy page with delivery times, costs, and carrier information.",
+      effort: "quick",
+    });
+  }
+
+  if (!fp.phone && !hasContactPage) {
+    issues.push({
+      item_id: 9,
+      section: "Contact Details",
+      title: "No phone number or contact page found",
+      problem: "No phone number and no contact page were found.",
+      evidence: `Scanned ${pagesScanned} pages. No phone pattern and no URL matching 'contact' or 'צור קשר' found.`,
+      fix: "Add a contact page with phone number, email, and physical address.",
+      effort: "quick",
+    });
+    recommendations.push({
+      item_id: 9,
+      title: "Add a complete contact page",
+      why: "A visible contact page makes the business look real and reachable.",
+      benefit: "Improves trust and helps users take the next step confidently.",
+    });
+  }
+
+  if (pagespeed.performance > 0 && pagespeed.performance < 50) {
+    issues.push({
+      item_id: 7,
+      section: "Performance",
+      title: "Low PageSpeed performance score",
+      problem: "Website performance is below acceptable thresholds.",
+      evidence: `PageSpeed score: ${pagespeed.performance}/100. LCP: ${pagespeed.lcp}. TTFB: ${pagespeed.ttfb}.`,
+      fix: "Optimize images, reduce JavaScript bundle size, and improve server response time.",
+      effort: "medium",
+    });
+    recommendations.push({
+      item_id: 7,
+      title: "Improve speed before sending more paid traffic",
+      why: "Slow sites waste traffic and make the business feel less reliable.",
+      benefit: "Better conversion rate, better user experience, and better ad readiness.",
+    });
+  }
+
+  const headlineParts: string[] = [];
+  headlineParts.push(`Scanned ${pagesScanned} page${pagesScanned !== 1 ? "s" : ""}`);
+  if (issues.length > 0)
+    headlineParts.push(`found ${issues.length} issue${issues.length !== 1 ? "s" : ""}`);
+  else headlineParts.push("no critical issues detected from available data");
+  if (pagespeed.performance > 0)
+    headlineParts.push(`PageSpeed ${pagespeed.performance}/100`);
+
+  const riskScore = Math.min(
+    95,
+    Math.max(20, 30 + issues.length * 12 + (pagespeed.performance < 50 ? 10 : 0))
+  );
+
   return ClaudeAnalysisSchema.parse({
-    risk_score: 65,
-    risk_level: "HIGH",
-    headline: "Free scan completed with limited data.",
-    critical_issues: [
-      {
-        item_id: 7,
-        section: "Performance",
-        title: "Performance needs improvement",
-        problem: "The website has measurable performance bottlenecks.",
-        evidence: "PageSpeed baseline indicates degraded loading experience.",
-        fix: "Improve LCP, JS bundle size, and server response time.",
-        effort: "medium",
-      },
-      {
-        item_id: 13,
-        section: "Identity consistency",
-        title: "Business identity consistency should be verified",
-        problem: "Limited scan cannot verify external channel consistency.",
-        evidence: "Google and Shopify data are not connected in free mode.",
-        fix: "Connect Google and Shopify for a full consistency audit.",
-        effort: "quick",
-      },
-      {
-        item_id: 16,
-        section: "Policy transparency",
-        title: "Policy coverage may be incomplete",
-        problem: "Policy pages should be visible and complete on the website.",
-        evidence: "Basic crawl flags policy visibility risk in free mode.",
-        fix: "Ensure privacy, return, shipping, and terms pages are complete.",
-        effort: "quick",
-      },
-    ],
-    recommendations: [],
+    risk_score: riskScore,
+    risk_level: riskScore >= 70 ? "HIGH" : riskScore >= 40 ? "MEDIUM" : "LOW",
+    headline: headlineParts.join(". ") + ".",
+    critical_issues: issues.slice(0, 3),
+    recommendations: recommendations.slice(0, 5),
     consistency_issues: [],
     checklist_results: {},
     appeal_tip:
-      "Free scan highlights top risks. Upgrade for full cross-platform validation before appeal.",
+      "This free scan is based on public website and performance signals only. Upgrade for connected Google + Shopify diagnosis and full compliance analysis.",
   });
 }
 
@@ -165,42 +321,64 @@ export async function runFreeScanPipeline(
     phaseDetailFor(SCAN_PHASES.pagespeed_crawl)
   );
 
-  const [pagespeedSettled, crawlSettled] = await Promise.allSettled([
+  let t0 = Date.now();
+  console.log("[TIMING] pagespeed + crawl + osint (parallel) start");
+  const [psSettled, crawlSettled, osintSettled] = await Promise.allSettled([
     getPageSpeedData(url),
     crawlWebsite(url),
+    gatherOsint(url, null),
   ]);
 
-  const pagespeed =
-    pagespeedSettled.status === "fulfilled"
-      ? pagespeedSettled.value
-      : defaultPageSpeedDataForFree(
-          pagespeedSettled.reason instanceof Error
-            ? pagespeedSettled.reason.message
-            : "Unknown error"
-        );
-  const crawl =
-    crawlSettled.status === "fulfilled" ? crawlSettled.value : defaultCrawlDataForFree(url);
+  let pagespeed: PageSpeedData;
+  if (psSettled.status === "fulfilled") {
+    pagespeed = psSettled.value;
+  } else {
+    pagespeed = defaultPageSpeedDataForFree(
+      psSettled.reason instanceof Error
+        ? psSettled.reason.message
+        : "Unknown error"
+    );
+  }
+
+  let crawl: CrawlResult;
+  if (crawlSettled.status === "fulfilled") {
+    crawl = crawlSettled.value;
+  } else {
+    console.warn(
+      "[TIMING] crawl error",
+      crawlSettled.reason instanceof Error
+        ? crawlSettled.reason.message
+        : String(crawlSettled.reason)
+    );
+    crawl = defaultCrawlDataForFree(url);
+  }
+  const osintData = osintSettled.status === "fulfilled" ? osintSettled.value : null;
+  const osintBlock = osintData ? formatOsintBlock(osintData) : "";
+
+  console.log("[TIMING] pagespeed + crawl + osint done", Date.now() - t0, "ms");
 
   await maybeProgress(scanId, SCAN_PHASES.analysis, phaseDetailFor(SCAN_PHASES.analysis));
 
   const gmcUser = mapScanProfileToUserProfile(profile);
-  const availableSources = inferAvailableDataSources(crawl, pagespeed, {});
-  const applicableItems = getApplicableRules(crawl.fingerprint, crawl, availableSources);
+  const applicableItems = getRelevantItems(gmcUser).filter(
+    (item) => item.priority === "rec" && (item.source === "crawl" || item.source === "pagespeed")
+  );
 
   const prompt = buildAnalysisPrompt(
     url,
     gmcUser,
-    JSON.stringify(crawl, null, 2),
-    JSON.stringify(pagespeed, null, 2),
+    crawl,
+    pagespeed,
     "",
     "",
     "",
     "",
     {
-      businessIdentityJson: JSON.stringify(crawl.fingerprint, null, 2),
       applicableItems,
+      mode: "free",
+      osintBlock,
       extraUserNotes:
-        "FREE SCAN MODE: Max 3 items in critical_issues. Do not assume Google/Shopify/GMC data. checklist_results may ONLY include rule IDs that appear in the URGENT or REC lists above.",
+        "FREE SCAN MODE: Return at most 3 public findings in critical_issues and up to 5 practical recommendations. Do not diagnose suspension causes. Focus on public-site trust, clarity, usability, and readiness improvements only. Google Merchant Center, Google Ads, Shopify, and GMB are not connected in free mode.",
     }
   );
 
@@ -210,6 +388,8 @@ export async function runFreeScanPipeline(
   }
 
   let analysis: ClaudeAnalysisOutput;
+  t0 = Date.now();
+  console.log("[TIMING] claude start");
   try {
     const client = new Anthropic({ apiKey });
     const response = await client.messages.create({
@@ -224,13 +404,14 @@ export async function runFreeScanPipeline(
       .trim();
 
     if (!text) {
-      analysis = buildFreeFallback();
+      analysis = buildDataDrivenFallback(crawl, pagespeed);
     } else {
       analysis = parseClaudeJson(text);
     }
   } catch {
-    analysis = buildFreeFallback();
+    analysis = buildDataDrivenFallback(crawl, pagespeed);
   }
+  console.log("[TIMING] claude done", Date.now() - t0, "ms");
 
   analysis = {
     ...analysis,
