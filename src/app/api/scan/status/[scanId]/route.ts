@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAppUserIdFromRequest } from "@/lib/app-session";
-import { getScanResultForUser } from "@/lib/scan-store";
+import { getScanResultById, getScanResultForUser } from "@/lib/scan-store";
 import { SCAN_PHASE_LABELS, type ScanPhaseKey } from "@/lib/scan-progress-phases";
 
 export const dynamic = "force-dynamic";
@@ -10,17 +10,15 @@ export async function GET(
   _req: Request,
   context: { params: { scanId: string } }
 ) {
-  const userId = getAppUserIdFromRequest(_req);
-  if (!userId) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
-
   const scanId = context.params.scanId?.trim();
   if (!scanId) {
     return NextResponse.json({ ok: false, error: "Missing scanId" }, { status: 400 });
   }
 
-  const row = await getScanResultForUser(scanId, userId);
+  const userId = getAppUserIdFromRequest(_req);
+  const row = userId
+    ? await getScanResultForUser(scanId, userId)
+    : await getScanResultById(scanId);
   if (!row) {
     return NextResponse.json({ ok: false, error: "Scan not found" }, { status: 404 });
   }

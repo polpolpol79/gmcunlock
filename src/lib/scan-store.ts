@@ -127,6 +127,30 @@ export async function createPendingScanResult(input: {
   return null;
 }
 
+/** Persist crawl/pagespeed mid-job so a follow-up serverless invocation can run Claude (Vercel 300s limit). */
+export async function persistScanIntermediateState(
+  scanId: string,
+  payload: { crawl: unknown; pagespeed: unknown; google_connected: boolean }
+): Promise<void> {
+  const table = await findTableForScanId(scanId);
+  const client = getAdminClientSafe();
+  if (!table || !client) return;
+
+  const tableClient = client.from(table as never) as any;
+  const { error } = await tableClient
+    .update({
+      crawl: payload.crawl,
+      pagespeed: payload.pagespeed,
+      google_connected: payload.google_connected,
+      progress_updated_at: new Date().toISOString(),
+    })
+    .eq("id", scanId);
+
+  if (error) {
+    console.warn("[scan-store] persistScanIntermediateState failed", { scanId, error: error.message });
+  }
+}
+
 export async function updateScanProgress(
   scanId: string,
   input: { phase: string; detail: string; status?: ScanJobStatus }

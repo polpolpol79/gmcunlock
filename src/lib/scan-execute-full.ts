@@ -13,9 +13,13 @@ import {
   getApplicableRules,
   inferAvailableDataSources,
   mapScanProfileToUserProfile,
+  type ChecklistItem,
 } from "@/lib/gmc-checklist";
 import {
+  completeScanResult,
   failScanResult,
+  getScanResultById,
+  persistScanIntermediateState,
   updateScanProgress,
 } from "@/lib/scan-store";
 import { SCAN_PHASES, phaseDetailFor } from "@/lib/scan-progress-phases";
@@ -50,7 +54,9 @@ export type FullPipelineResult =
       analysis: ClaudeAnalysisResult;
     }
   | { kind: "fatal"; status: number; json: Record<string, unknown> }
-  | { kind: "job_failed" };
+  | { kind: "job_failed" }
+  /** Crawl/data collection finished; Claude runs in a second serverless invocation (see /api/scan/full/analyze). */
+  | { kind: "deferred" };
 
 // ─── Normalizers ─────────────────────────────────────────
 
@@ -341,6 +347,259 @@ async function touchFullProgress(scanId: string | null, phase: string, detail: s
   await updateScanProgress(scanId, { phase, detail, status: "running" });
 }
 
+/** Internal HMAC for server→server continuation; optional dedicated env, else NEXTAUTH_SECRET. */
+export function getScanJobContinueSecret(): string | undefined {
+  return process.env.SCAN_JOB_CONTINUE_SECRET?.trim() || process.env.NEXTAUTH_SECRET?.trim();
+}
+
+export function triggerAnalyzeContinuationScan(scanId: string): void {
+  const secret = getScanJobContinueSecret();
+  if (!secret) return;
+  const origin =
+    process.env.NEXT_PUBLIC_APP_URL?.trim().replace(/\/$/, "") ||
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "") ||
+    "http://localhost:3000";
+  const base = origin.replace(/\/$/, "");
+  void fetch(`${base}/api/scan/full/analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-scan-continue-secret": secret },
+    body: JSON.stringify({ scan_id: scanId }),
+  })
+    .then(async (res) => {
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        console.error("[scan/full] analyze continuation failed", res.status, t.slice(0, 400));
+      } else {
+        console.info("[scan/full] analyze continuation accepted", { scanId });
+      }
+    })
+    .catch((err) => console.error("[scan/full] analyze continuation error", err));
+}
+
+async function runClaudeAnalysisAndPersistScan(
+  scanId: string | null,
+  url: string,
+  profile: UserProfileInput,
+  crawlData: CrawlResult,
+  pageSpeedData: PageSpeedData,
+  collectionIssue: string,
+  applicableItems: ChecklistItem[],
+  osintBlock: string,
+  shopifyJson: string,
+  gmcJsonForRules: string,
+  adsJsonForRules: string,
+  gmbData: string,
+  googleConnected: boolean
+): Promise<
+  | {
+      kind: "success";
+      googleConnected: boolean;
+      pageSpeedData: PageSpeedData;
+      crawlData: CrawlResult;
+      analysis: ClaudeAnalysisResult;
+    }
+  | { kind: "job_failed" }
+  | { kind: "fatal"; status: number; json: Record<string, unknown> }
+> {
+  await touchFullProgress(scanId, SCAN_PHASES.analysis, phaseDetailFor(SCAN_PHASES.analysis));
+
+  const prompt = buildAnalysisPrompt(
+    url,
+    mapScanProfileToUserProfile(profile),
+    crawlData,
+    pageSpeedData,
+    shopifyJson,
+    gmcJsonForRules,
+    adsJsonForRules,
+    gmbData,
+    { applicableItems, osintBlock }
+  );
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    if (scanId) {
+      await failScanResult(scanId, "Missing ANTHROPIC_API_KEY");
+      return { kind: "job_failed" };
+    }
+    return { kind: "fatal", status: 500, json: { ok: false, error: "Missing ANTHROPIC_API_KEY" } };
+  }
+
+  let analysis: ClaudeAnalysisResult;
+
+  try {
+    const client = new Anthropic({ apiKey });
+    const preferredModel = process.env.ANTHROPIC_MODEL?.trim() || DEFAULT_CLAUDE_MODEL;
+    let response: Anthropic.Messages.Message;
+    try {
+      response = await client.messages.create({
+        model: preferredModel,
+        max_tokens: 9000,
+        messages: [{ role: "user", content: prompt }],
+      });
+    } catch (modelErr) {
+      if (preferredModel === FALLBACK_CLAUDE_MODEL) throw modelErr;
+      response = await client.messages.create({
+        model: FALLBACK_CLAUDE_MODEL,
+        max_tokens: 9000,
+        messages: [{ role: "user", content: prompt }],
+      });
+    }
+
+    const text = extractClaudeText(response.content);
+    if (!text) {
+      throw new Error("Claude returned an empty response");
+    }
+
+    analysis = parseClaudeJson(text);
+  } catch (error) {
+    const reason =
+      error instanceof z.ZodError
+        ? "Invalid Claude JSON schema"
+        : error instanceof Error
+          ? error.message
+          : "Unknown Claude error";
+
+    const isRecoverableError =
+      isTlsOrNetworkError(error) ||
+      error instanceof z.ZodError ||
+      reason.includes("non-JSON") ||
+      reason.includes("empty response") ||
+      reason.includes("not valid JSON");
+
+    if (isRecoverableError) {
+      analysis = buildFallbackAnalysis({
+        url,
+        profile,
+        pagespeed: pageSpeedData,
+        crawl: crawlData,
+        reason: collectionIssue ? `${collectionIssue}; ${reason}` : reason,
+      });
+    } else {
+      if (scanId) {
+        await failScanResult(scanId, reason);
+        return { kind: "job_failed" };
+      }
+      return {
+        kind: "fatal",
+        status: 502,
+        json: { ok: false, error: reason },
+      };
+    }
+  }
+
+  await touchFullProgress(scanId, SCAN_PHASES.persist, phaseDetailFor(SCAN_PHASES.persist));
+
+  return {
+    kind: "success",
+    googleConnected,
+    pageSpeedData,
+    crawlData,
+    analysis,
+  };
+}
+
+export async function executeFullScanAnalyzeContinuation(scanId: string): Promise<void> {
+  const row = await getScanResultById(scanId);
+  if (!row || row.scan_type !== "paid") {
+    console.warn("[scan/full/analyze] missing row or not paid", scanId);
+    return;
+  }
+  if (row.scan_status === "done" || row.scan_status === "error") {
+    return;
+  }
+
+  const url = row.url;
+  const profile = row.profile as UserProfileInput;
+  const crawlData = row.crawl as CrawlResult;
+  const pageSpeedData = row.pagespeed as PageSpeedData;
+  const userId = row.user_id ?? null;
+
+  let gmbData = "";
+  let gmcJsonForRules = "";
+  let adsJsonForRules = "";
+  let googleConnected = false;
+  const googlePromise = (async () => {
+    try {
+      if (userId) {
+        const googleResult = await fetchAllGoogleConnectedDataForUser(userId);
+        if (googleResult.connected) {
+          return googleResult.data;
+        }
+      }
+    } catch {
+      /* non-blocking */
+    }
+    return null;
+  })();
+
+  const shopifyPromise = fetchShopifyConnectedDataForUser(userId);
+
+  const [googleResult, shopifyData] = await Promise.all([googlePromise, shopifyPromise]);
+
+  if (googleResult) {
+    gmbData = JSON.stringify(googleResult.gmb ?? {}, null, 2);
+    gmcJsonForRules = JSON.stringify(googleResult.merchant_center ?? {});
+    adsJsonForRules = JSON.stringify(googleResult.google_ads ?? {});
+    googleConnected = true;
+  }
+
+  const shopifyJson = JSON.stringify(shopifyData, null, 2);
+
+  let osintData: Awaited<ReturnType<typeof gatherOsint>> | null = null;
+  try {
+    osintData = await gatherOsint(url, null);
+  } catch {
+    osintData = null;
+  }
+  const osintBlock = osintData ? formatOsintBlock(osintData) : "";
+
+  const availableSources = inferAvailableDataSources(crawlData, pageSpeedData, {
+    gmcJson: gmcJsonForRules,
+    adsJson: adsJsonForRules,
+    shopifyJson,
+    gmbJson: gmbData,
+  });
+  const siteFp = toSiteFingerprint(crawlData);
+  const applicableItems = getApplicableRules(siteFp, availableSources);
+
+  const result = await runClaudeAnalysisAndPersistScan(
+    scanId,
+    url,
+    profile,
+    crawlData,
+    pageSpeedData,
+    "",
+    applicableItems,
+    osintBlock,
+    shopifyJson,
+    gmcJsonForRules,
+    adsJsonForRules,
+    gmbData,
+    googleConnected
+  );
+
+  if (result.kind === "job_failed") return;
+  if (result.kind === "fatal") {
+    await failScanResult(
+      scanId,
+      typeof result.json.error === "string" ? result.json.error : "Analysis failed"
+    );
+    return;
+  }
+
+  const ok = await completeScanResult(scanId, {
+    pagespeed: result.pageSpeedData,
+    crawl: result.crawlData,
+    analysis: result.analysis,
+    google_connected: result.googleConnected,
+  });
+  if (!ok) {
+    await failScanResult(scanId, "Could not save scan results.");
+    return;
+  }
+  console.info("[scan/full] completed via continuation", { scan_id: scanId, url });
+}
+
 export async function executeFullScanPipeline(
   req: Request,
   url: string,
@@ -440,99 +699,44 @@ export async function executeFullScanPipeline(
   const siteFp = toSiteFingerprint(crawlData);
   const applicableItems = getApplicableRules(siteFp, availableSources);
 
-  await touchFullProgress(scanId, SCAN_PHASES.analysis, phaseDetailFor(SCAN_PHASES.analysis));
+  if (scanId && getScanJobContinueSecret() && process.env.SCAN_DISABLE_SPLIT !== "1") {
+    await persistScanIntermediateState(scanId, {
+      crawl: crawlData,
+      pagespeed: pageSpeedData,
+      google_connected: googleConnected,
+    });
+    await touchFullProgress(
+      scanId,
+      SCAN_PHASES.analysis,
+      "Preparing AI compliance review…"
+    );
+    triggerAnalyzeContinuationScan(scanId);
+    return { kind: "deferred" };
+  }
 
-  const prompt = buildAnalysisPrompt(
+  const analysisResult = await runClaudeAnalysisAndPersistScan(
+    scanId,
     url,
-    mapScanProfileToUserProfile(profile),
+    profile,
     crawlData,
     pageSpeedData,
+    collectionIssue,
+    applicableItems,
+    osintBlock,
     shopifyJson,
     gmcJsonForRules,
     adsJsonForRules,
     gmbData,
-    { applicableItems, osintBlock }
+    googleConnected
   );
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    if (scanId) {
-      await failScanResult(scanId, "Missing ANTHROPIC_API_KEY");
-      return { kind: "job_failed" };
-    }
-    return { kind: "fatal", status: 500, json: { ok: false, error: "Missing ANTHROPIC_API_KEY" } };
-  }
-
-  let analysis: ClaudeAnalysisResult;
-
-  try {
-    const client = new Anthropic({ apiKey });
-    const preferredModel = process.env.ANTHROPIC_MODEL?.trim() || DEFAULT_CLAUDE_MODEL;
-    let response: Anthropic.Messages.Message;
-    try {
-      response = await client.messages.create({
-        model: preferredModel,
-        max_tokens: 9000,
-        messages: [{ role: "user", content: prompt }],
-      });
-    } catch (modelErr) {
-      if (preferredModel === FALLBACK_CLAUDE_MODEL) throw modelErr;
-      response = await client.messages.create({
-        model: FALLBACK_CLAUDE_MODEL,
-        max_tokens: 9000,
-        messages: [{ role: "user", content: prompt }],
-      });
-    }
-
-    const text = extractClaudeText(response.content);
-    if (!text) {
-      throw new Error("Claude returned an empty response");
-    }
-
-    analysis = parseClaudeJson(text);
-  } catch (error) {
-    const reason =
-      error instanceof z.ZodError
-        ? "Invalid Claude JSON schema"
-        : error instanceof Error
-          ? error.message
-          : "Unknown Claude error";
-
-    const isRecoverableError =
-      isTlsOrNetworkError(error) ||
-      error instanceof z.ZodError ||
-      reason.includes("non-JSON") ||
-      reason.includes("empty response") ||
-      reason.includes("not valid JSON");
-
-    if (isRecoverableError) {
-      analysis = buildFallbackAnalysis({
-        url,
-        profile,
-        pagespeed: pageSpeedData,
-        crawl: crawlData,
-        reason: collectionIssue ? `${collectionIssue}; ${reason}` : reason,
-      });
-    } else {
-      if (scanId) {
-        await failScanResult(scanId, reason);
-        return { kind: "job_failed" };
-      }
-      return {
-        kind: "fatal",
-        status: 502,
-        json: { ok: false, error: reason },
-      };
-    }
-  }
-
-  await touchFullProgress(scanId, SCAN_PHASES.persist, phaseDetailFor(SCAN_PHASES.persist));
-
+  if (analysisResult.kind === "job_failed") return { kind: "job_failed" };
+  if (analysisResult.kind === "fatal") return analysisResult;
   return {
     kind: "success",
-    googleConnected,
-    pageSpeedData,
-    crawlData,
-    analysis,
+    googleConnected: analysisResult.googleConnected,
+    pageSpeedData: analysisResult.pageSpeedData,
+    crawlData: analysisResult.crawlData,
+    analysis: analysisResult.analysis,
   };
 }

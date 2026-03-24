@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAppUserIdFromRequest } from "@/lib/app-session";
-import { getScanResultForUser } from "@/lib/scan-store";
+import { getScanResultById, getScanResultForUser } from "@/lib/scan-store";
 import { toSiteFingerprint, type CrawlResult } from "@/lib/crawler";
 
 export async function GET(
@@ -8,11 +8,6 @@ export async function GET(
   context: { params: { scanId: string } }
 ) {
   try {
-    const userId = getAppUserIdFromRequest(_req);
-    if (!userId) {
-      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-    }
-
     const scanId = context.params.scanId?.trim();
     if (!scanId) {
       return NextResponse.json(
@@ -21,7 +16,10 @@ export async function GET(
       );
     }
 
-    const row = await getScanResultForUser(scanId, userId);
+    const userId = getAppUserIdFromRequest(_req);
+    const row = userId
+      ? await getScanResultForUser(scanId, userId)
+      : await getScanResultById(scanId);
     if (!row) {
       return NextResponse.json(
         { ok: false, error: "Scan not found" },

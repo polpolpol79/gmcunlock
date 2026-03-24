@@ -90,6 +90,7 @@ export async function POST(req: Request) {
       try {
         const result = await executeFullScanPipeline(req, url, profile, scanId);
         if (result.kind === "job_failed") return;
+        if (result.kind === "deferred") return;
         if (result.kind === "fatal") {
           await failScanResult(
             scanId,
@@ -170,6 +171,9 @@ export async function POST(req: Request) {
       const result = await executeFullScanPipeline(req, url, profile, null);
       if (result.kind === "job_failed") {
         return NextResponse.json({ ok: false, error: "Unexpected scan state." }, { status: 500 });
+      }
+      if (result.kind === "deferred") {
+        return NextResponse.json({ ok: false, error: "Unexpected deferred state." }, { status: 500 });
       }
       if (result.kind === "fatal") {
         return NextResponse.json(result.json, { status: result.status });
