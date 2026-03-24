@@ -14,13 +14,16 @@ const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const DEFAULT_GOOGLE_REDIRECT_URI = "http://localhost:3000/api/google/oauth/callback";
 
-/** Read-only access to GMC + Ads. No write/delete permissions requested. */
+/**
+ * Google Content API and Google Ads API each have only ONE scope (no readonly variant).
+ * The app only performs read operations in practice — no data is ever written or deleted.
+ */
 const SCOPES = [
   "openid",
   "email",
   "profile",
-  "https://www.googleapis.com/auth/content.readonly",
-  "https://www.googleapis.com/auth/adwords.readonly",
+  "https://www.googleapis.com/auth/content",
+  "https://www.googleapis.com/auth/adwords",
 ];
 
 export type GoogleOAuthTokens = {
