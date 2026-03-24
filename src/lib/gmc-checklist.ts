@@ -18,6 +18,8 @@ export type Priority = "urgent" | "rec";
 export type ProfileType = "all" | "ecommerce" | "service_provider" | "leads_only";
 
 export type DataSource = "crawl" | "gmc" | "gads" | "shopify" | "gmb" | "pagespeed";
+// Note: "gads" and "gmb" are kept for backward compatibility with checklist items but
+// inferAvailableDataSources always returns false for them (Google Ads and GMB API removed).
 
 export type BusinessType = "ecommerce_shopify" | "ecommerce_other" | "service_provider" | "leads_only" | "other";
 
@@ -223,9 +225,7 @@ export function inferAvailableDataSources(
   pagespeed: PageSpeedData,
   extras: {
     gmcJson?: string;
-    adsJson?: string;
     shopifyJson?: string;
-    gmbJson?: string;
   } = {}
 ): AvailableDataSources {
   const textLen = crawl.pages.reduce((n, p) => n + (p.text?.length ?? 0), 0);
@@ -242,17 +242,13 @@ export function inferAvailableDataSources(
   const nonEmpty = (s?: string) =>
     Boolean(s && s.trim().length > 3 && s.trim() !== "{}" && s.trim() !== "null");
 
-  const gmbJson = extras.gmbJson ?? "";
-  const gmbApiConnected =
-    nonEmpty(gmbJson) && !gmbJson.includes('"public_presence_only":true');
-
   return {
     crawl: crawlOk,
     pagespeed: psOk,
     gmc: nonEmpty(extras.gmcJson),
-    gads: nonEmpty(extras.adsJson),
+    gads: false,
     shopify: nonEmpty(extras.shopifyJson),
-    gmb: gmbApiConnected,
+    gmb: false,
   };
 }
 
@@ -454,8 +450,6 @@ export function buildAnalysisPrompt(
   pageSpeed: PageSpeedData,
   shopData: string,
   gmcData: string,
-  adsData: string,
-  gmbData: string,
   options?: AnalysisPromptOptions
 ): string {
   const isFreeMode = (options?.mode ?? "paid") === "free";
@@ -494,6 +488,7 @@ export function buildAnalysisPrompt(
     both: "Blocked in Merchant Center and Google Ads",
     not_blocked: "Not blocked (proactive audit)",
   };
+  // Note: google_ads and both are kept for user profile backward compat
 
   const pageBlocks = websiteScan.pages
     .map((p, i) => {
@@ -556,7 +551,8 @@ ${langInstruction}
 - Never say "likely", "probably", or speculate — only report confirmed issues with quoted evidence.
 - If data is missing for a rule → checklist_results must be "unknown", not "fail".
 - Evaluate ONLY checklist rule IDs listed under "COMPLIANCE RULES TO CHECK" below.
-- When multiple data sources are connected (website, GMC, Ads, Shopify) plus OSINT/public search signals: actively compare them and flag any mismatches in business name, address, phone, email, or product data. We do NOT use the Google Business Profile Management API; for Maps/Search visibility use the OSINT section and the website crawl only.
+- When multiple data sources are connected (website, GMC, Shopify) plus OSINT/public search signals: actively compare them and flag any mismatches in business name, address, phone, email, currency, or product data.
+- For public Google presence (Maps/Search visibility): use ONLY the OSINT section and the website crawl. There is no authenticated Google Business Profile API.
 - IMPORTANT about OSINT data: If the OSINT section says "not found via Places API" — this DOES NOT mean the business is not on Google. The automated search has limited accuracy. Do NOT list "no Google Business Profile" as a critical issue unless you have strong independent evidence.
 - IMPORTANT about GMC data: If the GMC section shows an error or "Not connected" — do NOT speculate about suspension reasons, account status, or product feed issues. Mark all GMC-dependent rules as "unknown" and recommend the user verify their GMC account directly.
 - For appeal_tip: write a DETAILED, structured appeal strategy — not a single sentence. Include: (1) what the business owner should fix BEFORE submitting the appeal, (2) what to write in the appeal explanation, (3) what evidence/screenshots to attach, (4) what tone to use. Make it ready to copy-paste.
@@ -591,18 +587,8 @@ User-declared profile:
 
 Original input URL: ${websiteUrl}
 
-═══ BUSINESS IDENTITY (structured fingerprint + site class) ═══
+═══ BUSINESS IDENTITY ═══
 ${businessIdentityBlock}
-
-═══ BUSINESS IDENTITY (quick fields from crawl) ═══
-Name: ${fp.businessName ?? "[none]"}
-Primary email: ${fp.email ?? "[none]"}
-All emails found: ${(fp.emails?.length ? fp.emails.join(", ") : fp.email) || "[none]"}
-Primary phone: ${fp.phone ?? "[none]"}
-All phones found: ${(fp.phones?.length ? fp.phones.join(", ") : fp.phone) || "[none]"}
-Address: ${fp.address ?? "[none]"}
-Currency: ${fp.currency ?? "[none]"}
-HTML lang: ${fp.language ?? "[none]"}
 
 ═══ ROBOTS.TXT ═══
 ${robotsBlock}
@@ -615,17 +601,25 @@ Top opportunities: ${pageSpeed.opportunities?.join(" | ") || "n/a"}
 
 ${connectedPayloadBlock("═══ GOOGLE MERCHANT CENTER ═══", gmcData)}
 
-${connectedPayloadBlock("═══ GOOGLE ADS ═══", adsData)}
-
 ${connectedPayloadBlock("═══ SHOPIFY DATA ═══", shopData)}
-
-${connectedPayloadBlock("═══ PUBLIC GOOGLE PRESENCE (NO GMB API — use OSINT block below) ═══", gmbData)}
 
 ═══ OSINT / PUBLIC REPUTATION ═══
 ${options?.osintBlock?.trim() || "No OSINT data collected (API keys not configured or data unavailable)"}
 
 ═══ CONSISTENCY CHECK ═══
-When multiple sources are connected, compare: business/brand name, physical address, phone, support email, hours (if present). For how the business appears on Google Search/Maps, use OSINT + crawl — there is no authenticated GMB API payload. List mismatches with exact values from each source.
+Compare these fields across ALL connected sources. For each field, report what each source shows:
+- Business name: website vs GMC account vs Shopify store name vs OSINT
+- Email: website vs Shopify
+- Phone: website vs OSINT
+- Address: website vs OSINT
+- Currency: website vs GMC product prices vs Shopify
+- Product prices: website crawl vs GMC feed vs Shopify (compare any overlapping products if available)
+- Domain: website URL vs Shopify domain
+
+If a source is not connected, use "N/A" for that column.
+Mark as "match" only if values are substantially the same.
+Mark as "mismatch" if there is a clear discrepancy.
+Mark as "unknown" if data is insufficient to compare.
 
 ${rulesSection}
 ${extraNotes}

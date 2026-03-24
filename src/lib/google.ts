@@ -15,15 +15,14 @@ const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const DEFAULT_GOOGLE_REDIRECT_URI = "http://localhost:3000/api/google/oauth/callback";
 
 /**
- * Google Content API and Google Ads API each have only ONE scope (no readonly variant).
- * The app only performs read operations in practice — no data is ever written or deleted.
+ * Google Content API has only ONE scope (no readonly variant).
+ * The app only performs GET requests — no data is ever written or deleted.
  */
 const SCOPES = [
   "openid",
   "email",
   "profile",
   "https://www.googleapis.com/auth/content",
-  "https://www.googleapis.com/auth/adwords",
 ];
 
 export type GoogleOAuthTokens = {
@@ -93,29 +92,8 @@ export type MerchantCenterData = {
   error?: string;
 };
 
-export type GoogleAdsData = {
-  accessible_customers?: string[];
-  raw?: unknown;
-  error?: string;
-};
-
-export type GoogleBusinessProfileData = {
-  accounts?: Array<{
-    name?: string;
-    accountName?: string;
-    type?: string;
-  }>;
-  raw?: unknown;
-  error?: string;
-  /** True when we do not call mybusinessaccountmanagement.googleapis.com */
-  public_presence_only?: boolean;
-  note?: string;
-};
-
 export type GoogleConnectedData = {
   merchant_center: MerchantCenterData;
-  google_ads: GoogleAdsData;
-  gmb: GoogleBusinessProfileData;
 };
 
 function getRequiredEnv(name: string): string {
@@ -435,8 +413,8 @@ export async function fetchMerchantCenterData(
 
     const [accountIssues, productStatuses, productsSample] = await Promise.allSettled([
       fetchMcAccountStatuses(accessToken, merchantId),
-      fetchMcProductStatuses(accessToken, merchantId, 50),
-      fetchMcProducts(accessToken, merchantId, 25),
+      fetchMcProductStatuses(accessToken, merchantId, 20),
+      fetchMcProducts(accessToken, merchantId, 5),
     ]);
 
     return {
@@ -457,53 +435,81 @@ export async function fetchMerchantCenterData(
   }
 }
 
-export async function fetchGoogleAdsData(accessToken: string): Promise<GoogleAdsData> {
-  try {
-    const developerToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
-    if (!developerToken) {
-      return { error: "Missing GOOGLE_ADS_DEVELOPER_TOKEN" };
-    }
-
-    const res = await axios.post<{
-      resourceNames?: string[];
-    }>(
-      "https://googleads.googleapis.com/v16/customers:listAccessibleCustomers",
-      {},
-      {
-        timeout: 20000,
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "developer-token": developerToken,
-        },
-      }
-    );
-
-    return {
-      accessible_customers: res.data.resourceNames ?? [],
-      raw: res.data,
-    };
-  } catch (error) {
-    return {
-      error: error instanceof Error ? error.message : "Failed to fetch Google Ads data",
-    };
-  }
-}
-
 export async function fetchAllGoogleConnectedData(
   accessToken: string
 ): Promise<GoogleConnectedData> {
-  const [merchant_center, google_ads] = await Promise.all([
-    fetchMerchantCenterData(accessToken),
-    fetchGoogleAdsData(accessToken),
-  ]);
+  const merchant_center = await fetchMerchantCenterData(accessToken);
+  return { merchant_center };
+}
 
-  const gmb: GoogleBusinessProfileData = {
-    public_presence_only: true,
-    note:
-      "Google Business Profile Management API is not used (no business.manage scope). Use OSINT / public search signals in this prompt and the website crawl for how the business appears on Google Search & Maps.",
-  };
+/**
+ * Produce a human-readable text summary of Merchant Center data for Claude,
+ * instead of dumping raw JSON. Keeps prompt tokens low and data focused.
+ */
+export function summarizeMcData(mc: MerchantCenterData): string {
+  if (mc.error) return `Merchant Center: connection error — ${mc.error}`;
 
-  return { merchant_center, google_ads, gmb };
+  const lines: string[] = [];
+
+  const mid = mc.account_identifiers?.[0]?.merchant_id;
+  lines.push(`MERCHANT CENTER ACCOUNT${mid ? ` (ID: ${mid})` : ""}:`);
+
+  if (mc.account_issues && mc.account_issues.length > 0) {
+    lines.push(`\nAccount-level issues (${mc.account_issues.length}):`);
+    for (const issue of mc.account_issues) {
+      const sev = issue.severity ? ` [${issue.severity}]` : "";
+      const country = issue.country ? ` (country: ${issue.country})` : "";
+      lines.push(`  - ${issue.title ?? issue.id ?? "unknown"}${sev}${country}`);
+      if (issue.detail) lines.push(`    Detail: ${issue.detail}`);
+    }
+  } else {
+    lines.push("\nAccount-level issues: none found");
+  }
+
+  if (mc.product_statuses && mc.product_statuses.length > 0) {
+    let approved = 0, disapproved = 0, pending = 0;
+    const issueCount: Record<string, number> = {};
+
+    for (const ps of mc.product_statuses) {
+      for (const ds of ps.destinationStatuses ?? []) {
+        if (ds.status === "approved" || (ds.approvedCountries?.length ?? 0) > 0) approved++;
+        if ((ds.disapprovedCountries?.length ?? 0) > 0) disapproved++;
+        if ((ds.pendingCountries?.length ?? 0) > 0) pending++;
+      }
+      for (const il of ps.itemLevelIssues ?? []) {
+        const key = il.description ?? il.code ?? "unknown";
+        issueCount[key] = (issueCount[key] ?? 0) + 1;
+      }
+    }
+
+    lines.push(`\nProduct status overview (sample of ${mc.product_statuses.length}):`);
+    lines.push(`  Approved destinations: ${approved} | Disapproved: ${disapproved} | Pending: ${pending}`);
+
+    const topIssues = Object.entries(issueCount)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5);
+    if (topIssues.length > 0) {
+      lines.push("  Top item-level issues:");
+      for (const [desc, count] of topIssues) {
+        lines.push(`    - "${desc}" (${count} products)`);
+      }
+    }
+  }
+
+  if (mc.products_sample && mc.products_sample.length > 0) {
+    lines.push(`\nSample products (${mc.products_sample.length}):`);
+    for (let i = 0; i < mc.products_sample.length; i++) {
+      const p = mc.products_sample[i];
+      const price = p.price ? `${p.price.value ?? "?"} ${p.price.currency ?? ""}`.trim() : "no price";
+      const gtin = p.gtin ? `GTIN: ${p.gtin}` : "no GTIN";
+      const brand = p.brand ? `brand: ${p.brand}` : "";
+      const avail = p.availability ?? "unknown availability";
+      lines.push(`  ${i + 1}. "${p.title ?? "untitled"}" | ${price} | ${avail} | ${gtin}${brand ? ` | ${brand}` : ""}`);
+      if (p.link) lines.push(`     link: ${p.link}`);
+    }
+  }
+
+  return lines.join("\n");
 }
 
 const GOOGLE_ACCOUNT_IDENTIFIER = "primary";

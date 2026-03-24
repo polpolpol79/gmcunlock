@@ -19,12 +19,12 @@ import {
   completeScanResult,
   failScanResult,
   getScanResultById,
-  persistScanIntermediateState,
   updateScanProgress,
 } from "@/lib/scan-store";
 import { SCAN_PHASES, phaseDetailFor } from "@/lib/scan-progress-phases";
 import {
   fetchAllGoogleConnectedDataForUser,
+  summarizeMcData,
 } from "@/lib/google";
 import { fetchShopifyConnectedDataForUser } from "@/lib/shopify";
 import { gatherOsint, formatOsintBlock } from "@/lib/osint";
@@ -55,9 +55,7 @@ export type FullPipelineResult =
       analysis: ClaudeAnalysisResult;
     }
   | { kind: "fatal"; status: number; json: Record<string, unknown> }
-  | { kind: "job_failed" }
-  /** Crawl/data collection finished; Claude runs in a second serverless invocation (see /api/scan/full/analyze). */
-  | { kind: "deferred" };
+  | { kind: "job_failed" };
 
 // ─── Normalizers ─────────────────────────────────────────
 
@@ -479,34 +477,6 @@ async function touchFullProgress(scanId: string | null, phase: string, detail: s
   await updateScanProgress(scanId, { phase, detail, status: "running" });
 }
 
-/** Internal HMAC for server→server continuation; optional dedicated env, else NEXTAUTH_SECRET. */
-export function getScanJobContinueSecret(): string | undefined {
-  return process.env.SCAN_JOB_CONTINUE_SECRET?.trim() || process.env.NEXTAUTH_SECRET?.trim();
-}
-
-export function triggerAnalyzeContinuationScan(scanId: string): void {
-  const secret = getScanJobContinueSecret();
-  if (!secret) return;
-  const origin =
-    process.env.NEXT_PUBLIC_APP_URL?.trim().replace(/\/$/, "") ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "") ||
-    "http://localhost:3000";
-  const base = origin.replace(/\/$/, "");
-  void fetch(`${base}/api/scan/full/analyze`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-scan-continue-secret": secret },
-    body: JSON.stringify({ scan_id: scanId }),
-  })
-    .then(async (res) => {
-      if (!res.ok) {
-        const t = await res.text().catch(() => "");
-        console.error("[scan/full] analyze continuation failed", res.status, t.slice(0, 400));
-      } else {
-        console.info("[scan/full] analyze continuation accepted", { scanId });
-      }
-    })
-    .catch((err) => console.error("[scan/full] analyze continuation error", err));
-}
 
 async function runClaudeAnalysisAndPersistScan(
   scanId: string | null,
@@ -518,9 +488,7 @@ async function runClaudeAnalysisAndPersistScan(
   applicableItems: ChecklistItem[],
   osintBlock: string,
   shopifyJson: string,
-  gmcJsonForRules: string,
-  adsJsonForRules: string,
-  gmbData: string,
+  gmcSummary: string,
   googleConnected: boolean
 ): Promise<
   | {
@@ -541,9 +509,7 @@ async function runClaudeAnalysisAndPersistScan(
     crawlData,
     pageSpeedData,
     shopifyJson,
-    gmcJsonForRules,
-    adsJsonForRules,
-    gmbData,
+    gmcSummary,
     { applicableItems, osintBlock }
   );
 
@@ -661,110 +627,6 @@ async function runClaudeAnalysisAndPersistScan(
   };
 }
 
-export async function executeFullScanAnalyzeContinuation(scanId: string): Promise<void> {
-  const row = await getScanResultById(scanId);
-  if (!row || row.scan_type !== "paid") {
-    console.warn("[scan/full/analyze] missing row or not paid", scanId);
-    return;
-  }
-  if (row.scan_status === "done" || row.scan_status === "error") {
-    return;
-  }
-
-  const url = row.url;
-  const profile = row.profile as UserProfileInput;
-  const crawlData = row.crawl as CrawlResult;
-  const pageSpeedData = row.pagespeed as PageSpeedData;
-  const userId = row.user_id ?? null;
-
-  let gmbData = "";
-  let gmcJsonForRules = "";
-  let adsJsonForRules = "";
-  let googleConnected = false;
-  const googlePromise = (async () => {
-    try {
-      if (userId) {
-        const googleResult = await fetchAllGoogleConnectedDataForUser(userId);
-        if (googleResult.connected) {
-          return googleResult.data;
-        }
-      }
-    } catch {
-      /* non-blocking */
-    }
-    return null;
-  })();
-
-  const shopifyPromise = fetchShopifyConnectedDataForUser(userId);
-
-  const [googleResult, shopifyData] = await Promise.all([googlePromise, shopifyPromise]);
-
-  if (googleResult) {
-    const mc = googleResult.merchant_center as Record<string, unknown> | undefined;
-    const hasGmcError = mc && typeof mc.error === "string";
-    gmbData = JSON.stringify(googleResult.gmb ?? {}, null, 2);
-    gmcJsonForRules = hasGmcError ? "{}" : JSON.stringify(mc ?? {}, null, 2);
-    adsJsonForRules = JSON.stringify(googleResult.google_ads ?? {});
-    googleConnected = !hasGmcError;
-  }
-
-  const shopifyJson = JSON.stringify(shopifyData, null, 2);
-
-  const siteFp = toSiteFingerprint(crawlData);
-  let osintData: Awaited<ReturnType<typeof gatherOsint>> | null = null;
-  try {
-    osintData = await gatherOsint(url, siteFp.businessName ?? null);
-  } catch {
-    osintData = null;
-  }
-  const osintBlock = osintData ? formatOsintBlock(osintData) : "";
-
-  const availableSources = inferAvailableDataSources(crawlData, pageSpeedData, {
-    gmcJson: gmcJsonForRules,
-    adsJson: adsJsonForRules,
-    shopifyJson,
-    gmbJson: gmbData,
-  });
-  const applicableItems = getApplicableRules(siteFp, availableSources);
-
-  const result = await runClaudeAnalysisAndPersistScan(
-    scanId,
-    url,
-    profile,
-    crawlData,
-    pageSpeedData,
-    "",
-    applicableItems,
-    osintBlock,
-    shopifyJson,
-    gmcJsonForRules,
-    adsJsonForRules,
-    gmbData,
-    googleConnected
-  );
-
-  if (result.kind === "job_failed") return;
-  if (result.kind === "fatal") {
-    await failScanResult(
-      scanId,
-      typeof result.json.error === "string" ? result.json.error : "Analysis failed"
-    );
-    return;
-  }
-
-  const ok = await completeScanResult(scanId, {
-    pagespeed: result.pageSpeedData,
-    crawl: result.crawlData,
-    analysis: result.analysis,
-    google_connected: result.googleConnected,
-  });
-  if (!ok) {
-    await failScanResult(scanId, "Could not save scan results.");
-    return;
-  }
-  console.info("[scan/full] completed via continuation", { scan_id: scanId, url });
-}
-
 export async function executeFullScanPipeline(
   req: Request,
   url: string,
@@ -825,9 +687,8 @@ export async function executeFullScanPipeline(
 
   const fp = toSiteFingerprint(crawlData);
 
-  let gmbData = "";
+  let gmcSummary = "";
   let gmcJsonForRules = "";
-  let adsJsonForRules = "";
   let googleConnected = false;
   const userId = getAppUserIdFromRequest(req);
 
@@ -854,11 +715,10 @@ export async function executeFullScanPipeline(
   ]);
 
   if (googleResult) {
-    const mc = googleResult.merchant_center as Record<string, unknown> | undefined;
+    const mc = googleResult.merchant_center;
     const hasGmcError = mc && typeof mc.error === "string";
-    gmbData = JSON.stringify(googleResult.gmb ?? {}, null, 2);
     gmcJsonForRules = hasGmcError ? "{}" : JSON.stringify(mc ?? {}, null, 2);
-    adsJsonForRules = JSON.stringify(googleResult.google_ads ?? {});
+    gmcSummary = summarizeMcData(mc);
     googleConnected = !hasGmcError;
     if (hasGmcError) {
       collectionIssue = collectionIssue
@@ -872,26 +732,9 @@ export async function executeFullScanPipeline(
 
   const availableSources = inferAvailableDataSources(crawlData, pageSpeedData, {
     gmcJson: gmcJsonForRules,
-    adsJson: adsJsonForRules,
     shopifyJson,
-    gmbJson: gmbData,
   });
   const applicableItems = getApplicableRules(fp, availableSources);
-
-  if (scanId && process.env.SCAN_ENABLE_SPLIT === "1" && getScanJobContinueSecret()) {
-    await persistScanIntermediateState(scanId, {
-      crawl: crawlData,
-      pagespeed: pageSpeedData,
-      google_connected: googleConnected,
-    });
-    await touchFullProgress(
-      scanId,
-      SCAN_PHASES.analysis,
-      "Preparing AI compliance review…"
-    );
-    triggerAnalyzeContinuationScan(scanId);
-    return { kind: "deferred" };
-  }
 
   const analysisResult = await runClaudeAnalysisAndPersistScan(
     scanId,
@@ -903,9 +746,7 @@ export async function executeFullScanPipeline(
     applicableItems,
     osintBlock,
     shopifyJson,
-    gmcJsonForRules,
-    adsJsonForRules,
-    gmbData,
+    gmcSummary,
     googleConnected
   );
 

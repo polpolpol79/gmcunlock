@@ -11,11 +11,19 @@ export const SHOPIFY_OAUTH_RETURN_TO_COOKIE = "gmc_shopify_oauth_return_to";
 export const SHOPIFY_OAUTH_SHOP_COOKIE = "gmc_shopify_oauth_shop";
 
 const SHOPIFY_SCOPES = [
-  "read_shopify_payments_payouts",
-  "read_orders",
   "read_products",
   "read_content",
 ];
+
+export type ShopifyProductSample = {
+  title?: string;
+  price?: string;
+  currency?: string;
+  image_url?: string;
+  status?: string;
+  product_type?: string;
+  vendor?: string;
+};
 
 export type ShopifyConnectedData = {
   connected: boolean;
@@ -35,6 +43,7 @@ export type ShopifyConnectedData = {
     terms?: number;
     shipping?: number;
   };
+  products?: ShopifyProductSample[];
   error?: string;
 };
 
@@ -154,6 +163,41 @@ function getLegacyShopifyEnv() {
   return { domain, token };
 }
 
+async function fetchShopifyProducts(
+  domain: string,
+  token: string,
+  limit = 10
+): Promise<ShopifyProductSample[]> {
+  const base = `https://${normalizeShopDomain(domain)}/admin/api/2024-10`;
+  try {
+    const res = await axios.get<{
+      products?: Array<{
+        title?: string;
+        product_type?: string;
+        vendor?: string;
+        status?: string;
+        variants?: Array<{ price?: string }>;
+        images?: Array<{ src?: string }>;
+      }>;
+    }>(`${base}/products.json?limit=${limit}&fields=title,product_type,vendor,status,variants,images`, {
+      timeout: 20000,
+      headers: { "X-Shopify-Access-Token": token, "Content-Type": "application/json" },
+      validateStatus: () => true,
+    });
+
+    return (res.data?.products ?? []).map((p) => ({
+      title: p.title,
+      price: p.variants?.[0]?.price,
+      image_url: p.images?.[0]?.src,
+      status: p.status,
+      product_type: p.product_type || undefined,
+      vendor: p.vendor || undefined,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 async function fetchShopifyConnectedDataFromCredentials(
   domain: string,
   token: string
@@ -167,7 +211,7 @@ async function fetchShopifyConnectedDataFromCredentials(
       "Content-Type": "application/json",
     };
 
-    const [shopRes, privacyRes, refundRes, termsRes, shippingRes] = await Promise.all([
+    const [shopRes, privacyRes, refundRes, termsRes, shippingRes, products] = await Promise.all([
       axios.get<{ shop: ShopifyConnectedData["shop"] }>(`${base}/shop.json`, {
         timeout: 20000,
         headers,
@@ -192,6 +236,7 @@ async function fetchShopifyConnectedDataFromCredentials(
         headers,
         validateStatus: () => true,
       }),
+      fetchShopifyProducts(normalizedDomain, token),
     ]);
 
     return {
@@ -203,6 +248,7 @@ async function fetchShopifyConnectedDataFromCredentials(
         terms: Array.isArray(termsRes.data?.policies) ? termsRes.data.policies.length : 0,
         shipping: Array.isArray(shippingRes.data?.policies) ? shippingRes.data.policies.length : 0,
       },
+      products,
     };
   } catch (error) {
     return {
@@ -210,6 +256,51 @@ async function fetchShopifyConnectedDataFromCredentials(
       error: error instanceof Error ? error.message : "Failed to fetch Shopify data",
     };
   }
+}
+
+/**
+ * Produce a human-readable text summary of Shopify data for Claude.
+ */
+export function summarizeShopifyData(data: ShopifyConnectedData): string {
+  if (!data.connected) return "Shopify: not connected";
+  if (data.error) return `Shopify: connection error — ${data.error}`;
+
+  const lines: string[] = ["SHOPIFY STORE:"];
+
+  if (data.shop) {
+    const s = data.shop;
+    const parts = [
+      s.name ? `Name: ${s.name}` : null,
+      s.email ? `Email: ${s.email}` : null,
+      s.domain ? `Domain: ${s.domain}` : null,
+      s.myshopify_domain ? `Shopify domain: ${s.myshopify_domain}` : null,
+      s.country ? `Country: ${s.country}` : null,
+      s.currency ? `Currency: ${s.currency}` : null,
+      s.plan_name ? `Plan: ${s.plan_name}` : null,
+    ].filter(Boolean);
+    lines.push(parts.join(" | "));
+  }
+
+  if (data.policy_counts) {
+    const pc = data.policy_counts;
+    const yn = (n?: number) => (n && n > 0 ? "Yes" : "No");
+    lines.push(`\nPolicies: Privacy: ${yn(pc.privacy)} | Refund: ${yn(pc.refund)} | Terms: ${yn(pc.terms)} | Shipping: ${yn(pc.shipping)}`);
+  }
+
+  if (data.products && data.products.length > 0) {
+    lines.push(`\nSample products (${data.products.length}):`);
+    for (let i = 0; i < data.products.length; i++) {
+      const p = data.products[i];
+      const price = p.price ? `${p.price} ${p.currency ?? ""}`.trim() : "no price";
+      const type = p.product_type ? `Type: ${p.product_type}` : "";
+      const vendor = p.vendor ? `Vendor: ${p.vendor}` : "";
+      const status = p.status ?? "unknown";
+      const extras = [type, vendor].filter(Boolean).join(" | ");
+      lines.push(`  ${i + 1}. "${p.title ?? "untitled"}" | ${price} | ${status}${extras ? ` | ${extras}` : ""}`);
+    }
+  }
+
+  return lines.join("\n");
 }
 
 export async function upsertShopifyConnectionForUser(

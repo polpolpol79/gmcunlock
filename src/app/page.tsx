@@ -229,8 +229,15 @@ export default function Home() {
 
       {/* ── FOOTER ── */}
       <footer className="home-footer">
-        <Image src="/logo-clean.png" alt="GMC Unlock" width={360} height={90} unoptimized className="h-7 w-auto opacity-60" />
-        <p>Google Merchant Center compliance scanning for stores and agencies.</p>
+        <div className="home-footer-top">
+          <Image src="/logo-clean.png" alt="GMC Unlock" width={360} height={90} unoptimized className="h-7 w-auto opacity-60" />
+          <p>Google Merchant Center compliance scanning for stores and agencies.</p>
+        </div>
+        <div className="home-footer-links">
+          <a href="/privacy">Privacy Policy</a>
+          <span className="home-footer-sep">·</span>
+          <a href="/terms">Terms of Service</a>
+        </div>
       </footer>
     </div>
   );

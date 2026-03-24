@@ -444,14 +444,12 @@ export async function runFreeScanPipeline(
     pagespeed,
     "",
     "",
-    "",
-    "",
     {
       applicableItems,
       mode: "free",
       osintBlock,
       extraUserNotes:
-        `FREE SCAN MODE: Return at most 3 public findings in critical_issues and up to 5 practical recommendations. Do not diagnose suspension causes. Focus on public-site trust, clarity, usability, and readiness improvements only. Google Merchant Center, Google Ads, Shopify, and GMB are not connected in free mode.\n\n${typeNote}`,
+        `FREE SCAN MODE: Return at most 3 public findings in critical_issues and up to 5 practical recommendations. Do not diagnose suspension causes. Focus on public-site trust, clarity, usability, and readiness improvements only. Google Merchant Center, Shopify, and Google Business Profile are not connected in free mode.\n\n${typeNote}`,
     }
   );
 

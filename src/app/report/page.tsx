@@ -4,7 +4,6 @@ import Image from "next/image";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  AdsIcon,
   BrandBadge,
   MerchantIcon,
   PageSpeedIcon,
@@ -1280,15 +1279,14 @@ function ReportPageClient() {
                   tone={shopifyConnected ? "emerald" : "slate"}
                   icon={<ShopifyIcon />}
                 />
-                <BrandBadge label="Google Ads" tone="amber" icon={<AdsIcon />} />
               </div>
             </div>
             <p className="mt-2 max-w-3xl text-sm leading-7 app-muted">
-              Move from public warning signs into the connected recovery workflow: real Google evidence, optional Shopify store data, and deeper consistency analysis before the next review or appeal.
+              Move from public warning signs into the connected recovery workflow: real Google Merchant Center evidence, optional Shopify store data, and deeper consistency analysis before the next review or appeal.
             </p>
             <div className="mt-5 grid gap-3 sm:grid-cols-3">
               {[
-                "See what Google data says, not just what the public site shows",
+                "See what Google Merchant Center data says, not just what the public site shows",
                 "Compare website signals against connected store and account data",
                 "Turn the scan into a serious repair workflow for blocked or risky stores",
               ].map((item) => (
@@ -1305,6 +1303,9 @@ function ReportPageClient() {
               >
                 {data.google_connected || googleConnectedParam ? "Reconnect Google" : "Connect Google"}
               </button>
+              <p className="text-xs text-slate-400 leading-relaxed -mt-1">
+                We only read your Merchant Center data — we never edit, delete, or modify anything in your account.
+              </p>
               <div className="flex flex-col gap-3 sm:flex-row">
                 <input
                   type="text"
@@ -1364,6 +1365,28 @@ function ReportPageClient() {
           <h2 className="app-title text-lg font-semibold tracking-[-0.02em] sm:text-xl">
             {isFree ? "Public Scan Summary" : "Executive Summary"}
           </h2>
+          {!isFree && (
+            <div className="mt-4 flex flex-wrap gap-3">
+              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                data.analysis.risk_level === "CRITICAL" ? "bg-red-100 text-red-700 border border-red-200" :
+                data.analysis.risk_level === "HIGH" ? "bg-orange-100 text-orange-700 border border-orange-200" :
+                data.analysis.risk_level === "MEDIUM" ? "bg-amber-100 text-amber-700 border border-amber-200" :
+                "bg-emerald-100 text-emerald-700 border border-emerald-200"
+              }`}>
+                Risk: {data.analysis.risk_level}
+              </span>
+              {data.google_connected && (
+                <span className="rounded-full bg-blue-100 text-blue-700 border border-blue-200 px-3 py-1 text-xs font-semibold">
+                  Google Merchant Center
+                </span>
+              )}
+              {data.analysis.consistency_issues.length > 0 && (
+                <span className="rounded-full bg-purple-100 text-purple-700 border border-purple-200 px-3 py-1 text-xs font-semibold">
+                  {data.analysis.consistency_issues.length} fields compared
+                </span>
+              )}
+            </div>
+          )}
           <p className="mt-3 text-sm leading-7 text-slate-600 sm:text-base">{summaryHeadline}</p>
         </div>
 
@@ -1448,6 +1471,46 @@ function ReportPageClient() {
             </div>
           </div>
         ) : null}
+
+        {!isFree && (
+          <div className="mt-7 app-panel rounded-[32px] p-6 sm:p-7">
+            <p className="app-section-label">Scan Coverage</p>
+            <h2 className="mt-1 app-title text-lg font-semibold tracking-[-0.02em] sm:text-xl">Connected Data Sources</h2>
+            <p className="mt-2 text-sm app-muted">
+              These are the data sources that were analyzed in this scan. More connected sources means deeper and more accurate diagnosis.
+            </p>
+            <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="rounded-[20px] border border-emerald-200 bg-emerald-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-600">Website Crawl</p>
+                <p className="mt-1 text-sm font-semibold text-emerald-900">{pagesScanned} pages scanned</p>
+              </div>
+              <div className={`rounded-[20px] border px-4 py-3 ${
+                data.google_connected
+                  ? "border-emerald-200 bg-emerald-50"
+                  : "border-slate-200 bg-slate-50"
+              }`}>
+                <p className={`text-xs font-semibold uppercase tracking-wide ${data.google_connected ? "text-emerald-600" : "text-slate-400"}`}>Merchant Center</p>
+                <p className={`mt-1 text-sm font-semibold ${data.google_connected ? "text-emerald-900" : "text-slate-500"}`}>
+                  {data.google_connected ? "Connected" : "Not connected"}
+                </p>
+              </div>
+              <div className={`rounded-[20px] border px-4 py-3 ${
+                data.pagespeed.performance > 0
+                  ? "border-emerald-200 bg-emerald-50"
+                  : "border-slate-200 bg-slate-50"
+              }`}>
+                <p className={`text-xs font-semibold uppercase tracking-wide ${data.pagespeed.performance > 0 ? "text-emerald-600" : "text-slate-400"}`}>PageSpeed</p>
+                <p className={`mt-1 text-sm font-semibold ${data.pagespeed.performance > 0 ? "text-emerald-900" : "text-slate-500"}`}>
+                  {data.pagespeed.performance > 0 ? `Score: ${data.pagespeed.performance}/100` : "Unavailable"}
+                </p>
+              </div>
+              <div className="rounded-[20px] border border-emerald-200 bg-emerald-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-600">OSINT / Public</p>
+                <p className="mt-1 text-sm font-semibold text-emerald-900">Active</p>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="mt-7 app-panel rounded-[32px] p-6 sm:p-7">
           <div className="flex items-center justify-between">
@@ -1551,50 +1614,77 @@ function ReportPageClient() {
                 (r) => isNa(r.gmc) && isNa(r.gmb) && isNa(r.shopify) && r.status === "unknown"
               );
               const renderCell = (val: string) => {
-                if (isNa(val)) return <span className="text-slate-400 italic text-xs">Not connected</span>;
+                if (isNa(val)) return <span className="text-slate-400 italic text-xs">N/A</span>;
                 return val;
               };
+              const statusIcon = (status: string) => {
+                if (status === "match") return <span className="text-emerald-500" title="Match">&#10003;</span>;
+                if (status === "mismatch") return <span className="text-red-500" title="Mismatch">&#10007;</span>;
+                return <span className="text-slate-400" title="Unknown">—</span>;
+              };
+              const matchCount = ci.filter((r) => r.status === "match").length;
+              const mismatchCount = ci.filter((r) => r.status === "mismatch").length;
 
               return (
                 <div className="mt-7 app-panel rounded-[32px] p-6 sm:p-7">
-                  <h2 className="app-title text-lg font-semibold tracking-[-0.02em] sm:text-xl">Consistency Issues</h2>
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div>
+                      <p className="app-section-label">Cross-Source Verification</p>
+                      <h2 className="mt-1 app-title text-lg font-semibold tracking-[-0.02em] sm:text-xl">Data Consistency Matrix</h2>
+                    </div>
+                    {!allNa && (
+                      <div className="flex flex-wrap gap-2 text-xs">
+                        {matchCount > 0 && (
+                          <span className="rounded-full bg-emerald-100 px-3 py-1 font-semibold text-emerald-700">{matchCount} match</span>
+                        )}
+                        {mismatchCount > 0 && (
+                          <span className="rounded-full bg-red-100 px-3 py-1 font-semibold text-red-700">{mismatchCount} mismatch</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
                   {allNa ? (
                     <p className="mt-4 text-sm text-slate-500">
                       No cross-source comparison available. Connect Google Merchant Center or Shopify to compare business details across platforms and detect mismatches.
                     </p>
                   ) : (
-                    <div className="mt-5 overflow-auto">
-                      <table className="w-full min-w-[720px] border-separate border-spacing-0">
-                        <thead>
-                          <tr className="text-left">
-                            <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Field</th>
-                            <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Website</th>
-                            <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">GMC</th>
-                            <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Public / OSINT</th>
-                            <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Shopify</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {ci.map((row, idx) => {
-                            const cellClass =
-                              row.status === "match"
-                                ? "bg-emerald-50 text-emerald-700"
-                                : row.status === "mismatch"
-                                ? "bg-red-50 text-red-700"
-                                : "bg-slate-50 text-slate-600";
-                            return (
-                              <tr key={`${row.field}-${idx}`}>
-                                <td className="px-3 py-2 align-top text-sm font-semibold text-slate-900">{row.field}</td>
-                                <td className={`px-3 py-2 text-sm rounded-lg ${cellClass}`}>{renderCell(row.website)}</td>
-                                <td className={`px-3 py-2 text-sm rounded-lg ${cellClass}`}>{renderCell(row.gmc)}</td>
-                                <td className={`px-3 py-2 text-sm rounded-lg ${cellClass}`}>{renderCell(row.gmb)}</td>
-                                <td className={`px-3 py-2 text-sm rounded-lg ${cellClass}`}>{renderCell(row.shopify)}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
+                    <>
+                      <p className="mt-2 text-sm app-muted">Comparing business identity fields across all connected data sources.</p>
+                      <div className="mt-5 overflow-auto">
+                        <table className="w-full min-w-[720px] border-separate border-spacing-y-1 border-spacing-x-0">
+                          <thead>
+                            <tr className="text-left">
+                              <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Field</th>
+                              <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Website</th>
+                              <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Merchant Center</th>
+                              <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Public / OSINT</th>
+                              <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Shopify</th>
+                              <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400 text-center w-16">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {ci.map((row, idx) => {
+                              const rowBg =
+                                row.status === "match"
+                                  ? "bg-emerald-50/60"
+                                  : row.status === "mismatch"
+                                  ? "bg-red-50/60"
+                                  : "bg-slate-50/60";
+                              return (
+                                <tr key={`${row.field}-${idx}`} className={rowBg}>
+                                  <td className="px-3 py-2 align-top text-sm font-semibold text-slate-900 rounded-l-lg">{row.field}</td>
+                                  <td className="px-3 py-2 text-sm text-slate-700">{renderCell(row.website)}</td>
+                                  <td className="px-3 py-2 text-sm text-slate-700">{renderCell(row.gmc)}</td>
+                                  <td className="px-3 py-2 text-sm text-slate-700">{renderCell(row.gmb)}</td>
+                                  <td className="px-3 py-2 text-sm text-slate-700">{renderCell(row.shopify)}</td>
+                                  <td className="px-3 py-2 text-center text-base rounded-r-lg">{statusIcon(row.status)}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
                   )}
                 </div>
               );
@@ -1728,13 +1818,17 @@ function ReportPageClient() {
               <div className="mt-7 app-panel rounded-[32px] p-6 sm:p-7">
                 <p className="app-section-label">Next Steps</p>
                 <h2 className="mt-1 text-lg font-semibold tracking-[-0.02em] text-slate-900 sm:text-xl">
-                  Your Appeal Strategy
+                  Your Appeal & Recovery Strategy
                 </h2>
                 <p className="mt-2 text-sm app-muted">
                   A tailored, step-by-step strategy for submitting your appeal or compliance review to Google — based on the evidence found in this scan.
                 </p>
-                <div className="mt-5 rounded-[22px] border border-blue-200 bg-blue-50 px-5 py-4 text-sm leading-7 text-blue-900 whitespace-pre-line">
-                  {data.analysis.appeal_tip}
+                <div className="mt-5 space-y-4">
+                  {data.analysis.appeal_tip.split(/\n{2,}/).filter(Boolean).map((block, i) => (
+                    <div key={i} className="rounded-[22px] border border-blue-200 bg-blue-50 px-5 py-4 text-sm leading-7 text-blue-900 whitespace-pre-line">
+                      {block.trim()}
+                    </div>
+                  ))}
                 </div>
               </div>
             ) : null}
