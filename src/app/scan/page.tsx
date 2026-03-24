@@ -1,7 +1,16 @@
 "use client";
 
+import Image from "next/image";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import {
+  AdsIcon,
+  BrandBadge,
+  MerchantIcon,
+  PageSpeedIcon,
+  ShopifyIcon,
+  TrustIcon,
+} from "@/components/product-badges";
 
 type BusinessType = "ecommerce" | "service_provider" | "leads_only" | "other";
 type Platform = "shopify" | "woocommerce" | "wix" | "other";
@@ -30,13 +39,15 @@ function OptionCard({ label, active, onClick }: OptionCardProps) {
       type="button"
       onClick={onClick}
       className={[
-        "w-full text-left rounded-2xl border px-4 py-4 transition-colors",
-        "bg-white/[0.03] border-white/10 hover:bg-white/[0.05]",
-        active ? "border-indigo-400/70 bg-indigo-500/15" : "border-white/10",
-        "focus:outline-none focus:ring-2 focus:ring-indigo-400/50",
+        "w-full text-left rounded-[24px] border px-5 py-5 transition-all duration-200",
+        "bg-white border-slate-200 shadow-[0_16px_40px_rgba(15,23,42,0.05)] hover:-translate-y-0.5 hover:shadow-[0_22px_50px_rgba(15,23,42,0.08)]",
+        active
+          ? "border-blue-300 bg-[linear-gradient(180deg,#f8fbff,#eef4ff)] shadow-[0_22px_50px_rgba(37,99,235,0.12)]"
+          : "",
+        "focus:outline-none focus:ring-4 focus:ring-blue-100",
       ].join(" ")}
     >
-      <span className="block text-zinc-100 font-medium">{label}</span>
+      <span className="block text-base font-semibold text-slate-900">{label}</span>
     </button>
   );
 }
@@ -236,32 +247,64 @@ function ScanPageClient() {
   const onboardingProgressPct = onboardingStep * 25;
 
   return (
-    <div dir="ltr" className="min-h-screen bg-zinc-950 text-zinc-100">
-      <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8 py-14 sm:py-20">
-        <div className="mb-8">
-          <p className="text-sm text-zinc-400">
-            Target URL: <span className="text-zinc-100 font-medium">{urlParam || "—"}</span>
-          </p>
+    <div dir="ltr" className="app-shell">
+      <div className="app-container py-8 sm:py-10">
+        <div className="app-frame rounded-[28px] px-5 py-4 sm:px-7">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-4">
+              <Image src="/logo-clean.png" alt="GMC Unlock" width={360} height={90} unoptimized className="h-9 w-auto" />
+              <div>
+                <p className="app-section-label">Scan setup</p>
+                <h1 className="app-title mt-1 text-2xl font-semibold tracking-[-0.03em] sm:text-3xl">
+                  Configure the scan like a premium client-ready audit
+                </h1>
+                <p className="mt-1 text-sm app-muted">Start with the public scan, then step into connected Google and Shopify evidence only when needed.</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 text-sm">
+              <BrandBadge label="Merchant" tone="blue" icon={<MerchantIcon />} />
+              <BrandBadge label="Ads" tone="amber" icon={<AdsIcon />} />
+              <BrandBadge label="Shopify" tone="emerald" icon={<ShopifyIcon />} />
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-5 rounded-[28px] border border-slate-200 bg-white px-5 py-4 shadow-[0_16px_38px_rgba(15,23,42,0.05)]">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Target website</p>
+              <p className="mt-1 break-all text-lg font-semibold text-slate-900">{urlParam || "—"}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <BrandBadge label="Public trust scan" tone="slate" icon={<TrustIcon />} />
+              <BrandBadge label="Background PageSpeed" tone="blue" icon={<PageSpeedIcon />} />
+            </div>
+          </div>
         </div>
 
         {phase === "onboarding" ? (
           <>
-            <div className="mb-7">
-              <div className="flex items-center justify-between gap-4 mb-3">
-                <p className="text-sm text-zinc-300">Step {onboardingStep} of 4</p>
-                <p className="text-xs text-zinc-500">Answer to continue</p>
+            <div className="mt-7 app-frame rounded-[34px] p-6 sm:p-8">
+              <div className="mb-7 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="app-section-label">Step {onboardingStep} of 4</p>
+                  <h2 className="app-title mt-1 text-3xl font-semibold tracking-[-0.03em]">
+                    Tell us a bit about the business
+                  </h2>
+                </div>
+                <p className="text-sm app-muted">This helps us frame the free scan and the paid diagnosis correctly.</p>
               </div>
-              <div className="h-2 rounded-full bg-white/5 border border-white/10">
+              <div className="h-3 rounded-full bg-slate-100 shadow-inner">
                 <div
-                  className="h-2 rounded-full bg-indigo-500/70"
+                  className="h-3 rounded-full bg-[linear-gradient(90deg,#2563eb,#60a5fa)]"
                   style={{ width: `${onboardingProgressPct}%` }}
                 />
               </div>
-            </div>
 
-            {onboardingStep === 1 && (
-              <div className="rounded-3xl border border-white/10 bg-zinc-900/30 p-6 sm:p-7">
+              {onboardingStep === 1 && (
+                <div className="mt-7 rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_44px_rgba(15,23,42,0.05)] sm:p-7">
                 <h2 className="text-2xl font-bold">What type of business do you have?</h2>
+                <p className="mt-2 text-sm app-muted">Choose the business model we should optimize the experience for.</p>
                 <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-3">
                   <OptionCard
                     label="E-commerce store"
@@ -285,14 +328,15 @@ function ScanPageClient() {
                   />
                 </div>
                 {attemptedContinue && answers.business_type === "" ? (
-                  <p className="mt-4 text-sm text-red-400">Please select an option to continue.</p>
+                  <p className="mt-4 text-sm text-red-500">Please select an option to continue.</p>
                 ) : null}
               </div>
             )}
 
             {onboardingStep === 2 && (
-              <div className="rounded-3xl border border-white/10 bg-zinc-900/30 p-6 sm:p-7">
+              <div className="mt-7 rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_44px_rgba(15,23,42,0.05)] sm:p-7">
                 <h2 className="text-2xl font-bold">What platform is your website built on?</h2>
+                <p className="mt-2 text-sm app-muted">We use this to set expectations for public crawling and the paid scan flow.</p>
                 <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-3">
                   <OptionCard
                     label="Shopify"
@@ -316,14 +360,15 @@ function ScanPageClient() {
                   />
                 </div>
                 {attemptedContinue && answers.platform === "" ? (
-                  <p className="mt-4 text-sm text-red-400">Please select an option to continue.</p>
+                  <p className="mt-4 text-sm text-red-500">Please select an option to continue.</p>
                 ) : null}
               </div>
             )}
 
             {onboardingStep === 3 && (
-              <div className="rounded-3xl border border-white/10 bg-zinc-900/30 p-6 sm:p-7">
+              <div className="mt-7 rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_44px_rgba(15,23,42,0.05)] sm:p-7">
                 <h2 className="text-2xl font-bold">What problem are you facing?</h2>
+                <p className="mt-2 text-sm app-muted">This changes the framing of the report and the upgrade path.</p>
                 <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-3">
                   <OptionCard
                     label="Suspended in Merchant Center"
@@ -347,14 +392,15 @@ function ScanPageClient() {
                   />
                 </div>
                 {attemptedContinue && answers.blocked_where === "" ? (
-                  <p className="mt-4 text-sm text-red-400">Please select an option to continue.</p>
+                  <p className="mt-4 text-sm text-red-500">Please select an option to continue.</p>
                 ) : null}
               </div>
             )}
 
             {onboardingStep === 4 && (
-              <div className="rounded-3xl border border-white/10 bg-zinc-900/30 p-6 sm:p-7">
+              <div className="mt-7 rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_44px_rgba(15,23,42,0.05)] sm:p-7">
                 <h2 className="text-2xl font-bold">Do you have a Google Business Profile?</h2>
+                <p className="mt-2 text-sm app-muted">Useful for consistency checks later in the connected full scan.</p>
                 <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-3">
                   <OptionCard
                     label="Yes"
@@ -373,7 +419,7 @@ function ScanPageClient() {
                   />
                 </div>
                 {attemptedContinue && answers.has_gmb === undefined ? (
-                  <p className="mt-4 text-sm text-red-400">Please select an option to continue.</p>
+                  <p className="mt-4 text-sm text-red-500">Please select an option to continue.</p>
                 ) : null}
               </div>
             )}
@@ -384,25 +430,43 @@ function ScanPageClient() {
                 onClick={onContinueQuestion}
                 disabled={!canContinueForStep(onboardingStep)}
                 className={[
-                  "h-12 px-6 rounded-xl font-semibold transition-colors",
+                  "h-12 px-6 rounded-[18px] font-semibold transition-colors",
                   !canContinueForStep(onboardingStep)
-                    ? "bg-white/10 text-zinc-300 cursor-not-allowed"
-                    : "bg-indigo-500 hover:bg-indigo-400 active:bg-indigo-600 text-zinc-950",
-                  "focus:outline-none focus:ring-2 focus:ring-indigo-400/50",
+                    ? "bg-slate-200 text-slate-400 cursor-not-allowed"
+                    : "app-button-primary",
+                  "focus:outline-none focus:ring-4 focus:ring-blue-100",
                 ].join(" ")}
               >
                 Continue
               </button>
             </div>
+            </div>
           </>
         ) : (
-          <div className="rounded-3xl border border-white/10 bg-zinc-900/30 p-6 sm:p-8">
-            <h2 className="text-2xl font-bold">Choose your scan type</h2>
-            <p className="mt-2 text-sm text-zinc-400">
-              Free scan gives public-site intelligence. Full scan adds real Google + Shopify data and the full 77-rule engine.
+          <div className="mt-7 app-frame rounded-[34px] p-6 sm:p-8">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <p className="app-section-label">Choose the experience</p>
+                <h2 className="app-title mt-1 text-3xl font-semibold tracking-[-0.03em]">Free scan first or full connected diagnosis</h2>
+              </div>
+              <div className="app-chip text-sm">Same product. Two levels of depth.</div>
+            </div>
+            <p className="mt-3 max-w-3xl text-sm leading-7 app-muted">
+              The free scan helps you surface public trust gaps fast. The full scan is the connected recovery product for stores that need deeper Google and Shopify evidence.
             </p>
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              {[
+                "Use free scan to spot weak public signals before traffic is wasted",
+                "Use full scan when approvals, suspensions, or inconsistencies already hurt growth",
+                "Move into connected diagnosis only when the client is serious",
+              ].map((item) => (
+                <div key={item} className="rounded-[22px] border border-slate-200 bg-white px-4 py-4 text-sm text-slate-700 shadow-sm">
+                  {item}
+                </div>
+              ))}
+            </div>
             {!urlParam ? (
-              <p className="mt-3 text-sm text-red-300">
+              <p className="mt-4 text-sm text-red-500">
                 Missing target URL. Go back to homepage and enter a valid website URL.
               </p>
             ) : null}
@@ -413,46 +477,61 @@ function ScanPageClient() {
                 onClick={startFreeScan}
                 disabled={!urlParam}
                 className={[
-                  "rounded-2xl border p-5 text-left transition-colors",
+                  "rounded-[28px] border p-6 text-left transition-all",
                   urlParam
-                    ? "border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/15"
-                    : "border-white/10 bg-white/[0.03] text-zinc-500 cursor-not-allowed",
+                    ? "border-slate-200 bg-white shadow-[0_18px_44px_rgba(15,23,42,0.05)] hover:-translate-y-1"
+                    : "border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed",
                 ].join(" ")}
               >
-                <p className="text-lg font-bold text-emerald-200">Scan for Free</p>
-                <p className="mt-2 text-sm text-zinc-200/90">
-                  Run a public scan with crawl coverage, PageSpeed, evidence-backed findings, and quick wins.
+                <p className="text-sm font-medium text-emerald-600">Free scan</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-900">Impress first</p>
+                <p className="mt-3 text-sm leading-7 text-slate-600">
+                  Run a public scan with crawl coverage, trust signals, site identity, PageSpeed, and practical quick wins.
                 </p>
+                <div className="mt-5 space-y-2 text-sm text-slate-600">
+                  <p>• Public site identity and storefront trust review</p>
+                  <p>• Policy, contact, and quality coverage</p>
+                  <p>• Recommendations that make the site look stronger before traffic</p>
+                </div>
+                <div className="mt-6 flex items-center justify-between rounded-[18px] border border-emerald-100 bg-emerald-50 px-4 py-3">
+                  <span className="text-sm font-semibold text-emerald-700">Use free public scan</span>
+                  <span className="text-lg font-semibold text-emerald-600">→</span>
+                </div>
               </button>
 
-              <div className="rounded-2xl border border-indigo-500/25 bg-indigo-500/10 p-5 text-left">
+              <div className="rounded-[28px] border border-slate-200 bg-white p-6 text-left shadow-[0_18px_44px_rgba(15,23,42,0.05)]">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-lg font-bold text-indigo-100">Full Scan — $99</p>
-                    <p className="mt-2 text-sm text-zinc-200/90">
-                      Connect the real Google account and Shopify store for the serious compliance diagnosis.
+                    <p className="text-sm font-medium text-blue-600">Full diagnosis</p>
+                    <p className="mt-2 text-2xl font-semibold text-slate-900">Connected and serious</p>
+                    <p className="mt-3 text-sm leading-7 text-slate-600">
+                      Connect the real Google account and Shopify store when you need evidence strong enough to guide real recovery work.
                     </p>
                   </div>
-                  <span className="rounded-full border border-white/15 bg-black/20 px-3 py-1 text-xs text-zinc-200">
+                  <span className="app-chip text-xs">
                     Launch mode
                   </span>
                 </div>
 
                 <div className="mt-5 grid grid-cols-1 gap-3">
                   <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <span className={`rounded-full border px-3 py-1 ${googleConnected ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200" : "border-white/10 bg-white/[0.04] text-zinc-300"}`}>
-                      Google: {googleConnected ? "Connected" : "Not connected"}
-                    </span>
-                    <span className={`rounded-full border px-3 py-1 ${shopifyConnected ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200" : "border-white/10 bg-white/[0.04] text-zinc-300"}`}>
-                      Shopify: {shopifyConnected ? "Connected" : "Optional"}
-                    </span>
+                    <BrandBadge
+                      label={`Google: ${googleConnected ? "Connected" : "Not connected"}`}
+                      tone={googleConnected ? "emerald" : "slate"}
+                      icon={<MerchantIcon />}
+                    />
+                    <BrandBadge
+                      label={`Shopify: ${shopifyConnected ? "Connected" : "Optional"}`}
+                      tone={shopifyConnected ? "emerald" : "slate"}
+                      icon={<ShopifyIcon />}
+                    />
                   </div>
 
                   <div className="flex flex-col gap-3 sm:flex-row">
                     <button
                       type="button"
                       onClick={connectGoogle}
-                      className="h-11 rounded-xl bg-white text-zinc-950 px-4 font-semibold hover:bg-zinc-200 transition-colors"
+                      className="app-button-primary h-11 rounded-[18px] px-4 text-sm font-semibold"
                     >
                       {googleConnected ? "Reconnect Google" : "Connect Google"}
                     </button>
@@ -462,12 +541,12 @@ function ScanPageClient() {
                         value={shopDomain}
                         onChange={(e) => setShopDomain(e.target.value)}
                         placeholder="store.myshopify.com"
-                        className="h-11 flex-1 rounded-xl border border-white/10 bg-black/20 px-4 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
+                        className="app-input h-11 flex-1 px-4 text-sm outline-none focus:ring-4 focus:ring-blue-100"
                       />
                       <button
                         type="button"
                         onClick={connectShopify}
-                        className="h-11 rounded-xl border border-white/15 bg-white/[0.05] px-4 font-semibold text-zinc-100 hover:bg-white/[0.09] transition-colors"
+                        className="app-button-secondary h-11 rounded-[18px] px-4 text-sm font-semibold"
                       >
                         {shopifyConnected ? "Reconnect Shopify" : "Connect Shopify"}
                       </button>
@@ -479,15 +558,15 @@ function ScanPageClient() {
                     onClick={startPaidScan}
                     disabled={!urlParam || !googleConnected || setupBusy}
                     className={[
-                      "h-12 rounded-xl font-semibold transition-colors",
+                      "h-12 rounded-[18px] font-semibold transition-colors",
                       !urlParam || !googleConnected || setupBusy
-                        ? "bg-white/10 text-zinc-400 cursor-not-allowed"
-                        : "bg-indigo-500 text-zinc-950 hover:bg-indigo-400",
+                        ? "bg-slate-200 text-slate-400 cursor-not-allowed"
+                        : "app-button-primary",
                     ].join(" ")}
                   >
                     {setupBusy ? "Preparing..." : "Start Full Scan"}
                   </button>
-                  {setupError ? <p className="text-sm text-red-300">{setupError}</p> : null}
+                  {setupError ? <p className="text-sm text-red-500">{setupError}</p> : null}
                 </div>
               </div>
             </div>
@@ -502,10 +581,10 @@ export default function ScanPage() {
   return (
     <Suspense
       fallback={
-        <div dir="ltr" className="min-h-screen bg-zinc-950 text-zinc-100">
-          <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8 py-14 sm:py-20">
-            <div className="rounded-3xl border border-white/10 bg-zinc-900/30 p-6 sm:p-8">
-              <p className="text-sm text-zinc-300">Loading scan flow...</p>
+        <div dir="ltr" className="app-shell">
+          <div className="app-container py-14 sm:py-20">
+            <div className="app-panel-strong rounded-[32px] p-6 sm:p-8">
+              <p className="text-sm app-muted">Loading scan flow...</p>
             </div>
           </div>
         </div>

@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { getPageSpeedData, type PageSpeedData } from "@/lib/pagespeed";
+import { getPageSpeedData, pageSpeedUnavailable, type PageSpeedData } from "@/lib/pagespeed";
 import {
   crawlWebsite,
   emptyCrawlResult,
@@ -20,6 +20,9 @@ import {
   type UserProfileInput,
 } from "@/lib/scan-schemas";
 
+const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5";
+const FALLBACK_CLAUDE_MODEL = "claude-opus-4-5";
+
 type ChecklistResultValue = ClaudeAnalysisOutput["checklist_results"][string];
 
 export function normalizeFreeScanInputUrl(url: string): string {
@@ -30,15 +33,7 @@ export function normalizeFreeScanInputUrl(url: string): string {
 }
 
 export function defaultPageSpeedDataForFree(reason: string): PageSpeedData {
-  return {
-    performance: 0,
-    lcp: "N/A",
-    cls: "N/A",
-    fid: "N/A",
-    fcp: "N/A",
-    ttfb: `Unavailable (${reason})`,
-    opportunities: ["PageSpeed data unavailable - retry later."],
-  };
+  return pageSpeedUnavailable(reason);
 }
 
 export function defaultCrawlDataForFree(url: string): CrawlResult {
@@ -126,8 +121,10 @@ type ClaudeIssue = ClaudeAnalysisOutput["critical_issues"][number];
 
 function buildDataDrivenFallback(
   crawl: CrawlResult,
-  pagespeed: PageSpeedData
+  pagespeed: PageSpeedData,
+  businessType?: string
 ): ClaudeAnalysisOutput {
+  const isEcommerce = !businessType || businessType.startsWith("ecommerce");
   const issues: ClaudeIssue[] = [];
   const recommendations: ClaudeAnalysisOutput["recommendations"] = [];
   const fp = crawl.fingerprint;
@@ -145,6 +142,7 @@ function buildDataDrivenFallback(
   const hasReturns = /return|refund|החזר|החזרות/i.test(bundle);
   const hasShipping = /shipping|delivery|משלוח|הובלה/i.test(bundle);
   const hasContactPage = /contact|צור.{0,3}קשר/i.test(bundle);
+  const hasTranslationLeak = /translation missing:/i.test(bundle);
 
   if (!crawl.hasSSL) {
     issues.push({
@@ -210,7 +208,7 @@ function buildDataDrivenFallback(
     });
   }
 
-  if (!hasReturns) {
+  if (isEcommerce && !hasReturns) {
     issues.push({
       item_id: 18,
       section: "Policy Pages",
@@ -222,7 +220,7 @@ function buildDataDrivenFallback(
     });
   }
 
-  if (!hasShipping) {
+  if (isEcommerce && !hasShipping) {
     issues.push({
       item_id: 19,
       section: "Policy Pages",
@@ -252,6 +250,33 @@ function buildDataDrivenFallback(
     });
   }
 
+  if (!fp.address) {
+    recommendations.push({
+      item_id: 10,
+      title: "Add a visible business or returns address",
+      why: "A public address strengthens trust and helps customers understand who is behind the site.",
+      benefit: "Improves transparency and reduces friction around support, returns, and legitimacy.",
+    });
+  }
+
+  if (hasTranslationLeak) {
+    issues.push({
+      item_id: 73,
+      section: "UX & Trust",
+      title: "Visible untranslated placeholder text appears on the site",
+      problem: "Visitors can see raw translation placeholder text instead of polished UI copy.",
+      evidence: `Detected repeated text like 'Translation missing:' in scanned pages (${scannedUrlsList}).`,
+      fix: "Fix missing localization keys or remove untranslated placeholders from the live theme.",
+      effort: "quick",
+    });
+    recommendations.push({
+      item_id: 73,
+      title: "Fix visible translation placeholder text",
+      why: "Broken UI copy makes the site feel unfinished and harms trust immediately.",
+      benefit: "Creates a cleaner premium experience and reduces buyer hesitation.",
+    });
+  }
+
   if (pagespeed.performance > 0 && pagespeed.performance < 50) {
     issues.push({
       item_id: 7,
@@ -268,6 +293,13 @@ function buildDataDrivenFallback(
       why: "Slow sites waste traffic and make the business feel less reliable.",
       benefit: "Better conversion rate, better user experience, and better ad readiness.",
     });
+  } else if (pagespeed.performance === 0) {
+    recommendations.push({
+      item_id: 7,
+      title: "Retry PageSpeed and review real loading bottlenecks",
+      why: "Performance data could not be collected, so speed risk is still partially unknown.",
+      benefit: "Gives you a clearer picture of mobile friction before sending more paid traffic.",
+    });
   }
 
   const headlineParts: string[] = [];
@@ -275,8 +307,15 @@ function buildDataDrivenFallback(
   if (issues.length > 0)
     headlineParts.push(`found ${issues.length} issue${issues.length !== 1 ? "s" : ""}`);
   else headlineParts.push("no critical issues detected from available data");
-  if (pagespeed.performance > 0)
-    headlineParts.push(`PageSpeed ${pagespeed.performance}/100`);
+  if (pagespeed.performance > 0) {
+    headlineParts.push(
+      pagespeed.source === "cached"
+        ? `PageSpeed ${pagespeed.performance}/100 (cached snapshot)`
+        : `PageSpeed ${pagespeed.performance}/100`
+    );
+  } else {
+    headlineParts.push("PageSpeed unavailable in this run");
+  }
 
   const riskScore = Math.min(
     95,
@@ -294,6 +333,36 @@ function buildDataDrivenFallback(
     appeal_tip:
       "This free scan is based on public website and performance signals only. Upgrade for connected Google + Shopify diagnosis and full compliance analysis.",
   });
+}
+
+function enrichAnalysisIfThin(
+  analysis: ClaudeAnalysisOutput,
+  crawl: CrawlResult,
+  pagespeed: PageSpeedData,
+  businessType?: string
+): ClaudeAnalysisOutput {
+  const fallback = buildDataDrivenFallback(crawl, pagespeed, businessType);
+  const hasIssues = analysis.critical_issues.length > 0;
+  const hasRecommendations = analysis.recommendations.length > 0;
+  if (hasIssues && hasRecommendations) return analysis;
+
+  return {
+    ...analysis,
+    critical_issues: hasIssues ? analysis.critical_issues : fallback.critical_issues,
+    recommendations: hasRecommendations ? analysis.recommendations : fallback.recommendations,
+    headline:
+      analysis.headline && analysis.headline !== "Limited scan completed with available data."
+        ? analysis.headline
+        : fallback.headline,
+    risk_score:
+      analysis.risk_score > 0
+        ? Math.max(analysis.risk_score, fallback.risk_score)
+        : fallback.risk_score,
+    risk_level:
+      analysis.risk_level === "CRITICAL" || analysis.risk_level === "HIGH" || analysis.risk_level === "MEDIUM"
+        ? analysis.risk_level
+        : fallback.risk_level,
+  };
 }
 
 async function maybeProgress(scanId: string | null, phase: string, detail: string) {
@@ -322,22 +391,23 @@ export async function runFreeScanPipeline(
   );
 
   let t0 = Date.now();
-  console.log("[TIMING] pagespeed + crawl + osint (parallel) start");
-  const [psSettled, crawlSettled, osintSettled] = await Promise.allSettled([
-    getPageSpeedData(url),
+  console.log("[TIMING] crawl + osint + pagespeed (parallel) start");
+  const [crawlSettled, osintSettled, pagespeedSettled] = await Promise.allSettled([
     crawlWebsite(url),
     gatherOsint(url, null),
+    getPageSpeedData(url, "fast"),
   ]);
 
   let pagespeed: PageSpeedData;
-  if (psSettled.status === "fulfilled") {
-    pagespeed = psSettled.value;
+  if (pagespeedSettled.status === "fulfilled") {
+    pagespeed = pagespeedSettled.value;
+    console.log("[TIMING] pagespeed OK, score:", pagespeed.performance);
   } else {
-    pagespeed = defaultPageSpeedDataForFree(
-      psSettled.reason instanceof Error
-        ? psSettled.reason.message
-        : "Unknown error"
-    );
+    const reason = pagespeedSettled.reason instanceof Error
+      ? pagespeedSettled.reason.message
+      : String(pagespeedSettled.reason);
+    console.warn("[TIMING] pagespeed failed inline:", reason);
+    pagespeed = defaultPageSpeedDataForFree(reason);
   }
 
   let crawl: CrawlResult;
@@ -355,14 +425,24 @@ export async function runFreeScanPipeline(
   const osintData = osintSettled.status === "fulfilled" ? osintSettled.value : null;
   const osintBlock = osintData ? formatOsintBlock(osintData) : "";
 
-  console.log("[TIMING] pagespeed + crawl + osint done", Date.now() - t0, "ms");
+  console.log("[TIMING] crawl + osint + pagespeed done", Date.now() - t0, "ms");
 
   await maybeProgress(scanId, SCAN_PHASES.analysis, phaseDetailFor(SCAN_PHASES.analysis));
 
   const gmcUser = mapScanProfileToUserProfile(profile);
   const applicableItems = getRelevantItems(gmcUser).filter(
-    (item) => item.priority === "rec" && (item.source === "crawl" || item.source === "pagespeed")
+    (item) => item.source === "crawl" || item.source === "pagespeed"
   );
+
+  const businessTypeNotes: Record<string, string> = {
+    ecommerce_shopify: "This is a Shopify e-commerce store. Check product pages, checkout trust, shipping/returns/refund policies, payment icons, and storefront legitimacy. Report issues specific to online selling.",
+    ecommerce_other: "This is an e-commerce store. Check product pages, checkout trust, shipping/returns/refund policies, payment icons, and storefront legitimacy.",
+    service_provider: "This is a service provider (e.g. law firm, consultant, agency). Do NOT flag missing shipping/returns policies — they are irrelevant. Instead focus on: professional credibility, credentials/licensing, clear service descriptions, office details, trust signals, and client testimonials.",
+    leads_only: "This is a landing page / lead generation site. Do NOT flag missing shipping/returns policies — they are irrelevant. Focus on: clarity of offer, CTA quality, no misleading claims, social proof, trust signals, and transparent pricing/value proposition.",
+    other: "This is a general business website. Focus on trust, contact info, transparency, and basic web quality.",
+  };
+
+  const typeNote = businessTypeNotes[gmcUser.business_type] || businessTypeNotes.other;
 
   const prompt = buildAnalysisPrompt(
     url,
@@ -378,7 +458,7 @@ export async function runFreeScanPipeline(
       mode: "free",
       osintBlock,
       extraUserNotes:
-        "FREE SCAN MODE: Return at most 3 public findings in critical_issues and up to 5 practical recommendations. Do not diagnose suspension causes. Focus on public-site trust, clarity, usability, and readiness improvements only. Google Merchant Center, Google Ads, Shopify, and GMB are not connected in free mode.",
+        `FREE SCAN MODE: Return at most 3 public findings in critical_issues and up to 5 practical recommendations. Do not diagnose suspension causes. Focus on public-site trust, clarity, usability, and readiness improvements only. Google Merchant Center, Google Ads, Shopify, and GMB are not connected in free mode.\n\n${typeNote}`,
     }
   );
 
@@ -392,11 +472,22 @@ export async function runFreeScanPipeline(
   console.log("[TIMING] claude start");
   try {
     const client = new Anthropic({ apiKey });
-    const response = await client.messages.create({
-      model: "claude-opus-4-5",
-      max_tokens: 2200,
-      messages: [{ role: "user", content: prompt }],
-    });
+    const preferredModel = process.env.ANTHROPIC_MODEL?.trim() || DEFAULT_CLAUDE_MODEL;
+    let response: Anthropic.Messages.Message;
+    try {
+      response = await client.messages.create({
+        model: preferredModel,
+        max_tokens: 2200,
+        messages: [{ role: "user", content: prompt }],
+      });
+    } catch (modelErr) {
+      if (preferredModel === FALLBACK_CLAUDE_MODEL) throw modelErr;
+      response = await client.messages.create({
+        model: FALLBACK_CLAUDE_MODEL,
+        max_tokens: 2200,
+        messages: [{ role: "user", content: prompt }],
+      });
+    }
     const text = response.content
       .filter((b): b is Anthropic.Messages.TextBlock => b.type === "text")
       .map((b) => b.text)
@@ -404,12 +495,12 @@ export async function runFreeScanPipeline(
       .trim();
 
     if (!text) {
-      analysis = buildDataDrivenFallback(crawl, pagespeed);
+      analysis = buildDataDrivenFallback(crawl, pagespeed, gmcUser.business_type);
     } else {
-      analysis = parseClaudeJson(text);
+      analysis = enrichAnalysisIfThin(parseClaudeJson(text), crawl, pagespeed, gmcUser.business_type);
     }
   } catch {
-    analysis = buildDataDrivenFallback(crawl, pagespeed);
+    analysis = buildDataDrivenFallback(crawl, pagespeed, gmcUser.business_type);
   }
   console.log("[TIMING] claude done", Date.now() - t0, "ms");
 

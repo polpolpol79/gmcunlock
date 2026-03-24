@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { getAppUserIdFromRequest } from "@/lib/app-session";
-import { getPageSpeedData, type PageSpeedData } from "@/lib/pagespeed";
+import { pageSpeedUnavailable, getPageSpeedData, type PageSpeedData } from "@/lib/pagespeed";
 import {
   crawlWebsite,
   emptyCrawlResult,
@@ -29,6 +29,9 @@ import {
   type ClaudeAnalysisOutput,
   type UserProfileInput,
 } from "@/lib/scan-schemas";
+
+const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5";
+const FALLBACK_CLAUDE_MODEL = "claude-opus-4-5";
 
 type ClaudeIssue = ClaudeAnalysisOutput["critical_issues"][number];
 type ClaudeRecommendation = ClaudeAnalysisOutput["recommendations"][number];
@@ -347,15 +350,7 @@ function buildFallbackAnalysis(params: {
 }
 
 export function defaultPageSpeedData(reason: string): PageSpeedData {
-  return {
-    performance: 0,
-    lcp: "N/A",
-    cls: "N/A",
-    fid: "N/A",
-    fcp: "N/A",
-    ttfb: `Unavailable (${reason})`,
-    opportunities: ["PageSpeed data unavailable - retry later."],
-  };
+  return pageSpeedUnavailable(reason);
 }
 
 export function defaultCrawlData(url: string): CrawlResult {
@@ -385,22 +380,16 @@ export async function executeFullScanPipeline(
   let crawlData: CrawlResult;
   let collectionIssue = "";
 
-  const [psResult, crawlResult, osintResult] = await Promise.allSettled([
-    getPageSpeedData(url),
+  const [crawlResult, osintResult, pagespeedResult] = await Promise.allSettled([
     crawlWebsite(url),
     gatherOsint(url, null),
+    getPageSpeedData(url, "fast"),
   ]);
 
-  if (psResult.status === "fulfilled") {
-    pageSpeedData = psResult.value;
+  if (pagespeedResult.status === "fulfilled") {
+    pageSpeedData = pagespeedResult.value;
   } else {
-    const error = psResult.reason;
-    const reason = error instanceof Error ? error.message : "Unknown PageSpeed error";
-    if (!isTlsOrNetworkError(error)) throw error;
-    pageSpeedData = defaultPageSpeedData(reason);
-    collectionIssue = collectionIssue
-      ? `${collectionIssue}; PageSpeed unavailable`
-      : "PageSpeed unavailable";
+    pageSpeedData = defaultPageSpeedData("PageSpeed timed out during scan");
   }
 
   if (crawlResult.status === "fulfilled") {
@@ -413,19 +402,16 @@ export async function executeFullScanPipeline(
     collectionIssue = collectionIssue
       ? `${collectionIssue}; Crawl unavailable`
       : "Crawl unavailable";
-    if (pageSpeedData.performance === 0 && pageSpeedData.ttfb.startsWith("Unavailable")) {
-      const msg =
-        "Both PageSpeed and Crawl data collection failed due to network/certificate issues.";
-      if (scanId) {
-        await failScanResult(scanId, `${msg} ${reason}`);
-        return { kind: "job_failed" };
-      }
-      return {
-        kind: "fatal",
-        status: 502,
-        json: { ok: false, error: msg, details: reason },
-      };
+    const msg = "Website crawl data collection failed due to network or certificate issues.";
+    if (scanId) {
+      await failScanResult(scanId, `${msg} ${reason}`);
+      return { kind: "job_failed" };
     }
+    return {
+      kind: "fatal",
+      status: 502,
+      json: { ok: false, error: msg, details: reason },
+    };
   }
 
   await touchFullProgress(
@@ -504,11 +490,22 @@ export async function executeFullScanPipeline(
 
   try {
     const client = new Anthropic({ apiKey });
-    const response = await client.messages.create({
-      model: "claude-opus-4-5",
-      max_tokens: 4000,
-      messages: [{ role: "user", content: prompt }],
-    });
+    const preferredModel = process.env.ANTHROPIC_MODEL?.trim() || DEFAULT_CLAUDE_MODEL;
+    let response: Anthropic.Messages.Message;
+    try {
+      response = await client.messages.create({
+        model: preferredModel,
+        max_tokens: 9000,
+        messages: [{ role: "user", content: prompt }],
+      });
+    } catch (modelErr) {
+      if (preferredModel === FALLBACK_CLAUDE_MODEL) throw modelErr;
+      response = await client.messages.create({
+        model: FALLBACK_CLAUDE_MODEL,
+        max_tokens: 9000,
+        messages: [{ role: "user", content: prompt }],
+      });
+    }
 
     const text = extractClaudeText(response.content);
     if (!text) {
@@ -524,7 +521,14 @@ export async function executeFullScanPipeline(
           ? error.message
           : "Unknown Claude error";
 
-    if (isTlsOrNetworkError(error) || error instanceof z.ZodError) {
+    const isRecoverableError =
+      isTlsOrNetworkError(error) ||
+      error instanceof z.ZodError ||
+      reason.includes("non-JSON") ||
+      reason.includes("empty response") ||
+      reason.includes("not valid JSON");
+
+    if (isRecoverableError) {
       analysis = buildFallbackAnalysis({
         url,
         profile,
@@ -534,13 +538,13 @@ export async function executeFullScanPipeline(
       });
     } else {
       if (scanId) {
-        await failScanResult(scanId, `${reason} (Claude response was not valid JSON.)`);
+        await failScanResult(scanId, reason);
         return { kind: "job_failed" };
       }
       return {
         kind: "fatal",
         status: 502,
-        json: { ok: false, error: reason, details: "Claude response was not valid JSON." },
+        json: { ok: false, error: reason },
       };
     }
   }

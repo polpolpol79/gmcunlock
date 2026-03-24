@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAppUserIdFromRequest } from "@/lib/app-session";
 import { getScanResultForUser } from "@/lib/scan-store";
+import { toSiteFingerprint, type CrawlResult } from "@/lib/crawler";
 
 export async function GET(
   _req: Request,
@@ -28,6 +29,8 @@ export async function GET(
       );
     }
 
+    const crawl = row.crawl as CrawlResult | null;
+
     return NextResponse.json({
       ok: true,
       data: {
@@ -36,6 +39,7 @@ export async function GET(
         scan_type: row.scan_type ?? "free",
         google_connected: row.google_connected ?? false,
         profile: row.profile,
+        fingerprint: crawl ? toSiteFingerprint(crawl) : null,
         pagespeed: row.pagespeed,
         crawl: row.crawl,
         analysis: row.analysis,

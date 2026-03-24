@@ -8,6 +8,7 @@ import {
   getShopifyRedirectUri,
   isValidShopDomain,
   normalizeShopDomain,
+  parseShopifyOAuthState,
   upsertShopifyConnectionForUser,
   verifyShopifyCallback,
 } from "@/lib/shopify";
@@ -30,9 +31,16 @@ function safeReturnTo(input: string | null | undefined): string {
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const baseUrl = getAppBaseUrl(req);
-  const returnTo = safeReturnTo(
-    readCookieValue(req.headers.get("cookie"), SHOPIFY_OAUTH_RETURN_TO_COOKIE)
-  );
+  const stateParam = url.searchParams.get("state") ?? "";
+
+  // Extract returnTo from state (primary) or cookie (fallback)
+  const { nonce: stateNonce, returnTo: returnToFromState } = stateParam
+    ? parseShopifyOAuthState(stateParam)
+    : { nonce: "", returnTo: "/report" };
+  const returnToCookie = readCookieValue(req.headers.get("cookie"), SHOPIFY_OAUTH_RETURN_TO_COOKIE);
+  const returnTo = returnToFromState !== "/report"
+    ? returnToFromState
+    : safeReturnTo(returnToCookie);
   const separator = returnTo.includes("?") ? "&" : "?";
 
   try {
@@ -49,16 +57,16 @@ export async function GET(req: Request) {
       );
     }
 
-    const state = url.searchParams.get("state");
     const code = url.searchParams.get("code");
     const shop = normalizeShopDomain(
       url.searchParams.get("shop") ??
         readCookieValue(req.headers.get("cookie"), SHOPIFY_OAUTH_SHOP_COOKIE) ??
         ""
     );
-    const storedState = readCookieValue(req.headers.get("cookie"), SHOPIFY_OAUTH_STATE_COOKIE);
+    // Validate CSRF: compare stored nonce with state nonce
+    const storedNonce = readCookieValue(req.headers.get("cookie"), SHOPIFY_OAUTH_STATE_COOKIE);
 
-    if (!code || !state || !storedState || state !== storedState) {
+    if (!code || !stateParam || !storedNonce || stateNonce !== storedNonce) {
       return NextResponse.redirect(
         `${baseUrl}${returnTo}${separator}shopify_error=${encodeURIComponent("invalid_state")}`
       );

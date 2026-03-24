@@ -70,6 +70,13 @@ export async function ensureAppUserSession(req: Request): Promise<{
 }
 
 function shouldUseSecureCookie(req: Request): boolean {
+  const host = (req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? "").toLowerCase();
+  const isLocalHost =
+    host.startsWith("localhost:") ||
+    host.startsWith("127.0.0.1:") ||
+    host.startsWith("[::1]:");
+  if (isLocalHost) return false;
+
   const explicit = process.env.NEXTAUTH_URL || process.env.APP_URL;
   if (explicit) return explicit.startsWith("https://");
   const proto = req.headers.get("x-forwarded-proto") ?? "http";

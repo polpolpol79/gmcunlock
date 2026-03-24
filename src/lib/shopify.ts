@@ -62,8 +62,19 @@ export function getShopifyRedirectUri(): string {
   return `${base}/api/shopify/oauth/callback`;
 }
 
-export function createShopifyOAuthState(): string {
-  return crypto.randomBytes(24).toString("hex");
+export function createShopifyOAuthState(returnTo?: string): string {
+  const nonce = crypto.randomBytes(24).toString("hex");
+  if (!returnTo) return nonce;
+  return `${nonce}|${encodeURIComponent(returnTo)}`;
+}
+
+export function parseShopifyOAuthState(state: string): { nonce: string; returnTo: string } {
+  const pipeIdx = state.indexOf("|");
+  if (pipeIdx === -1) return { nonce: state, returnTo: "/report" };
+  const nonce = state.slice(0, pipeIdx);
+  const returnTo = decodeURIComponent(state.slice(pipeIdx + 1));
+  if (!returnTo.startsWith("/") || returnTo.startsWith("//")) return { nonce, returnTo: "/report" };
+  return { nonce, returnTo };
 }
 
 export function buildShopifyOAuthUrl(params: {

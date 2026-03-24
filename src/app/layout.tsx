@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "GMC Unlock",
-  description: "Public scan and connected compliance diagnosis for Google Merchant Center and Google Ads recovery.",
+  description: "GMC Unlock helps merchants prevent Google suspensions, improve site trust, and diagnose Merchant Center and Google Ads recovery issues with evidence-backed scans.",
 };
 
 export default function RootLayout({

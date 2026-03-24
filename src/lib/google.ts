@@ -12,15 +12,15 @@ export const GOOGLE_OAUTH_RETURN_TO_COOKIE = "gmc_google_oauth_return_to";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
-const DEFAULT_GOOGLE_REDIRECT_URI = "http://localhost:3006/api/google/oauth/callback";
+const DEFAULT_GOOGLE_REDIRECT_URI = "http://localhost:3000/api/google/oauth/callback";
 
+/** GMC + Ads only — no business.manage (GMB Management API). Public Maps/Search context comes from OSINT + crawl. */
 const SCOPES = [
   "openid",
   "email",
   "profile",
   "https://www.googleapis.com/auth/content",
   "https://www.googleapis.com/auth/adwords",
-  "https://www.googleapis.com/auth/business.manage",
 ];
 
 export type GoogleOAuthTokens = {
@@ -55,6 +55,9 @@ export type GoogleBusinessProfileData = {
   }>;
   raw?: unknown;
   error?: string;
+  /** True when we do not call mybusinessaccountmanagement.googleapis.com */
+  public_presence_only?: boolean;
+  note?: string;
 };
 
 export type GoogleConnectedData = {
@@ -76,12 +79,50 @@ export function getGoogleClientConfig() {
   };
 }
 
-export function getGoogleRedirectUri(): string {
-  return process.env.GOOGLE_REDIRECT_URI || DEFAULT_GOOGLE_REDIRECT_URI;
+export function getRequestBaseUrl(req?: Request): string {
+  if (req) {
+    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+    const proto = req.headers.get("x-forwarded-proto") ?? "http";
+    if (host) {
+      const normalizedHost = host.toLowerCase();
+      const requestBase = `${proto}://${host}`;
+      const isLocalHost =
+        normalizedHost.startsWith("localhost:") ||
+        normalizedHost.startsWith("127.0.0.1:") ||
+        normalizedHost.startsWith("[::1]:");
+      if (isLocalHost) return requestBase;
+    }
+  }
+  const explicit = process.env.NEXTAUTH_URL || process.env.APP_BASE_URL;
+  if (explicit) return explicit.replace(/\/$/, "");
+  if (req) {
+    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+    const proto = req.headers.get("x-forwarded-proto") ?? "http";
+    if (host) return `${proto}://${host}`;
+  }
+  return DEFAULT_GOOGLE_REDIRECT_URI.replace(/\/api\/google\/oauth\/callback$/, "");
 }
 
-export function createGoogleOAuthState(): string {
-  return crypto.randomBytes(24).toString("hex");
+export function getGoogleRedirectUri(req?: Request): string {
+  if (process.env.GOOGLE_REDIRECT_URI) return process.env.GOOGLE_REDIRECT_URI;
+  return `${getRequestBaseUrl(req)}/api/google/oauth/callback`;
+}
+
+export function createGoogleOAuthState(returnTo?: string): string {
+  const nonce = crypto.randomBytes(24).toString("hex");
+  if (!returnTo) return nonce;
+  // Encode returnTo inside the state so it survives the full OAuth round-trip
+  // (cookies on 307 redirects are unreliable across browsers)
+  return `${nonce}|${encodeURIComponent(returnTo)}`;
+}
+
+export function parseGoogleOAuthState(state: string): { nonce: string; returnTo: string } {
+  const pipeIdx = state.indexOf("|");
+  if (pipeIdx === -1) return { nonce: state, returnTo: "/report" };
+  const nonce = state.slice(0, pipeIdx);
+  const returnTo = decodeURIComponent(state.slice(pipeIdx + 1));
+  if (!returnTo.startsWith("/") || returnTo.startsWith("//")) return { nonce, returnTo: "/report" };
+  return { nonce, returnTo };
 }
 
 export function buildGoogleOAuthUrl(params: {
@@ -273,33 +314,19 @@ export async function fetchGoogleAdsData(accessToken: string): Promise<GoogleAds
   }
 }
 
-export async function fetchGoogleBusinessProfileData(
-  accessToken: string
-): Promise<GoogleBusinessProfileData> {
-  try {
-    const raw = await getJson<{
-      accounts?: Array<{ name?: string; accountName?: string; type?: string }>;
-    }>("https://mybusinessaccountmanagement.googleapis.com/v1/accounts", accessToken);
-
-    return {
-      accounts: raw.accounts ?? [],
-      raw,
-    };
-  } catch (error) {
-    return {
-      error: error instanceof Error ? error.message : "Failed to fetch Business Profile data",
-    };
-  }
-}
-
 export async function fetchAllGoogleConnectedData(
   accessToken: string
 ): Promise<GoogleConnectedData> {
-  const [merchant_center, google_ads, gmb] = await Promise.all([
+  const [merchant_center, google_ads] = await Promise.all([
     fetchMerchantCenterData(accessToken),
     fetchGoogleAdsData(accessToken),
-    fetchGoogleBusinessProfileData(accessToken),
   ]);
+
+  const gmb: GoogleBusinessProfileData = {
+    public_presence_only: true,
+    note:
+      "Google Business Profile Management API is not used (no business.manage scope). Use OSINT / public search signals in this prompt and the website crawl for how the business appears on Google Search & Maps.",
+  };
 
   return { merchant_center, google_ads, gmb };
 }

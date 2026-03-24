@@ -1,5 +1,6 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
+import https from "https";
 
 const UA_GOOGLEBOT =
   "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
@@ -91,7 +92,8 @@ function visibleText(html: string, maxLen: number): string {
 async function httpGet(
   url: string,
   timeoutMs: number,
-  ua: string = UA_GOOGLEBOT
+  ua: string = UA_GOOGLEBOT,
+  insecureTls = false
 ): Promise<{ ok: boolean; status: number; body: string; finalUrl: string }> {
   try {
     const res = await axios.get<string>(url, {
@@ -103,6 +105,7 @@ async function httpGet(
         "User-Agent": ua,
         Accept: "text/html,application/xhtml+xml,text/xml,text/plain;q=0.9,*/*;q=0.8",
       },
+      httpsAgent: new https.Agent({ rejectUnauthorized: !insecureTls }),
       transformResponse: [(d) => (typeof d === "string" ? d.slice(0, 1_200_000) : d)],
     });
     const finalUrl =
@@ -116,6 +119,16 @@ async function httpGet(
   } catch (err) {
     const code = (err as { code?: string })?.code ?? "";
     const isTimeout = code === "ECONNABORTED" || code === "ETIMEDOUT";
+    const isTlsChainError = [
+      "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+      "SELF_SIGNED_CERT_IN_CHAIN",
+      "DEPTH_ZERO_SELF_SIGNED_CERT",
+      "ERR_TLS_CERT_ALTNAME_INVALID",
+    ].includes(code);
+    if (!insecureTls && isTlsChainError && /^https:\/\//i.test(url)) {
+      console.warn(`[crawler] retrying with relaxed TLS validation: ${url}`);
+      return httpGet(url, timeoutMs, ua, true);
+    }
     console.warn(`[crawler] httpGet failed: ${url} ${isTimeout ? "(timeout)" : `(${code})`}`);
     return { ok: false, status: 0, body: "", finalUrl: url };
   }
@@ -299,9 +312,13 @@ const HE_POBOX = /ת\.?ד\.?\s*\d+/;
  * visibleText() collapses HTML to one line, so we split on common delimiters.
  */
 function extractAddressFromText(text: string): string | null {
-  // Split the collapsed text into segments using common delimiters
+  const genericHeStreetCity = /([א-ת"'׳\-\s]{2,30}\s+\d{1,4}\s*,\s*(?:תל[-\s]?אביב|ירושלים|חיפה|באר[-\s]?שבע|ראשון[-\s]?לציון|פתח[-\s]?תקווה|נתניה|אשדוד|הרצליה|רמת[-\s]?גן|גבעתיים|רחובות|כפר[-\s]?סבא|הוד[-\s]?השרון|רעננה|מודיעין|אשקלון|בני[-\s]?ברק|חולון|בת[-\s]?ים|נס[-\s]?ציונה|לוד|רמלה|עפולה|טבריה|אילת|קריית[-\s]?\S+))/;
+  const genericMatch = text.match(genericHeStreetCity)?.[1]?.trim();
+  if (genericMatch) return genericMatch.slice(0, 80);
+
+  // Split the collapsed text into segments using stronger delimiters first.
   const segments = text
-    .split(/[|·•\n]|(?:,\s)/)
+    .split(/[|·•\n]/)
     .map((s) => s.trim())
     .filter((s) => s.length > 5 && s.length < 120);
 

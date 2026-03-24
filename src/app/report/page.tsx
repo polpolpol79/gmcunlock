@@ -1,7 +1,17 @@
 "use client";
 
+import Image from "next/image";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import {
+  AdsIcon,
+  BrandBadge,
+  MerchantIcon,
+  PageSpeedIcon,
+  ShopifyIcon,
+  TrustIcon,
+} from "@/components/product-badges";
+import { CHECKLIST } from "@/lib/gmc-checklist";
 
 type HasGmb = true | false | null;
 type ChecklistResultValue = "pass" | "fail" | "warning" | "unknown";
@@ -22,6 +32,10 @@ type PageSpeedData = {
   fcp: string;
   ttfb: string;
   opportunities: string[];
+  source?: "live" | "cached" | "unavailable";
+  strategy?: "mobile" | "desktop" | "unknown";
+  collectedAt?: string | null;
+  note?: string | null;
 };
 
 type SiteFingerprint = {
@@ -51,6 +65,7 @@ type CriticalIssue = {
   section: string;
   title: string;
   problem: string;
+  why_it_matters?: string;
   evidence: string;
   fix: string;
   effort: "quick" | "medium" | "hard";
@@ -80,6 +95,7 @@ type ClaudeAnalysisResult = {
   recommendations: Recommendation[];
   consistency_issues: ConsistencyIssue[];
   checklist_results: Record<string, ChecklistResultValue>;
+  suspension_reason?: string;
   appeal_tip: string;
 };
 
@@ -88,6 +104,7 @@ type ScanPayload = {
   scan_type: ScanType;
   google_connected: boolean;
   url?: string;
+  profile?: unknown;
   fingerprint?: SiteFingerprint | null;
   pagespeed: PageSpeedData;
   crawl: CrawlResult;
@@ -158,6 +175,22 @@ function phaseStepIndex(phase: string, scanType: ScanType): number {
   return i === -1 ? Math.max(0, order.length - 2) : i;
 }
 
+function visualProgressPercent(currentIdx: number, stepCount: number, elapsedSec: number): number {
+  if (stepCount <= 1) return 0;
+  if (currentIdx >= stepCount - 1) return 100;
+  const base = Math.round((currentIdx / (stepCount - 1)) * 100);
+  const next = Math.round(((currentIdx + 1) / (stepCount - 1)) * 100);
+  const segment = Math.max(6, next - base);
+  // Creep forward smoothly without looping back.
+  const drift = Math.min(segment * 0.78, Math.max(2, elapsedSec * 0.9));
+  return Math.min(next - 2, Math.round(base + drift));
+}
+
+function rotatingMessage(messages: string[], tick: number): string {
+  if (messages.length === 0) return "";
+  return messages[Math.floor(tick / 3) % messages.length];
+}
+
 function ScanProgressPanel({
   pollState,
   scanUrl,
@@ -173,17 +206,21 @@ function ScanProgressPanel({
   scanUrl: string;
 }) {
   const [tick, setTick] = useState(0);
+  const [maxProgress, setMaxProgress] = useState(10);
   useEffect(() => {
     const i = window.setInterval(() => setTick((x) => x + 1), 1000);
     return () => window.clearInterval(i);
   }, []);
+  useEffect(() => {
+    setMaxProgress(10);
+  }, [pollState.scanId]);
 
   const elapsed = Math.floor((Date.now() - pollState.startedAt) / 1000);
   const steps =
     pollState.scanType === "paid"
       ? [
           { key: "queued", label: "Starting" },
-          { key: "pagespeed_crawl", label: "PageSpeed & site crawl" },
+          { key: "pagespeed_crawl", label: "Website crawl" },
           { key: "google_shopify", label: "Google & Shopify" },
           { key: "analysis", label: "AI compliance review" },
           { key: "persist", label: "Saving report" },
@@ -191,44 +228,132 @@ function ScanProgressPanel({
         ]
       : [
           { key: "queued", label: "Starting" },
-          { key: "pagespeed_crawl", label: "PageSpeed & site crawl" },
+          { key: "pagespeed_crawl", label: "Website crawl" },
           { key: "analysis", label: "AI compliance review" },
           { key: "persist", label: "Saving report" },
           { key: "done", label: "Done" },
         ];
 
   const currentIdx = phaseStepIndex(pollState.phase, pollState.scanType);
+  const progressPercent = visualProgressPercent(currentIdx, steps.length, elapsed);
+  useEffect(() => {
+    setMaxProgress((curr) => Math.max(curr, progressPercent));
+  }, [progressPercent]);
+  const phaseMessages =
+    pollState.scanType === "paid"
+      ? {
+          queued: [
+            "Starting the scan environment and validating the target site",
+            "Preparing the report shell so results can appear as soon as they are ready",
+          ],
+          pagespeed_crawl: [
+            "Opening the live site and mapping important pages",
+            "Reading public policies, contact details, and storefront trust signals",
+            "Collecting business identity evidence from the live website",
+          ],
+          google_shopify: [
+            "Checking connected Google data for account-side evidence",
+            "Loading Shopify store-side data where it is connected",
+            "Preparing cross-source comparisons before analysis",
+          ],
+          analysis: [
+            "Turning raw evidence into clear findings and next steps",
+            "Checking the collected data against the relevant compliance logic",
+            "Preparing a clean report instead of generic warnings",
+          ],
+          persist: [
+            "Saving the report so it can be reopened and shared",
+            "Finalizing the report payload and response state",
+          ],
+          done: ["Your report is ready."],
+        }
+      : {
+          queued: [
+            "Starting the scan environment and validating the target site",
+            "Preparing the report shell so results can appear quickly",
+          ],
+          pagespeed_crawl: [
+            "Opening the live site and mapping important pages",
+            "Checking trust signals, policies, and business identity",
+            "Collecting public evidence for a useful recommendation-first report",
+          ],
+          analysis: [
+            "Turning raw storefront data into clear findings and quick wins",
+            "Filtering the evidence into a simple public-facing report",
+            "Preparing recommendations that strengthen trust before traffic",
+          ],
+          persist: [
+            "Saving the report so you can reopen it instantly",
+            "Finalizing the scan result and handoff to the report page",
+          ],
+          done: ["Your report is ready."],
+        };
+  const currentMessage = rotatingMessage(
+    phaseMessages[pollState.phase as keyof typeof phaseMessages] ?? ["Processing your scan"],
+    tick
+  );
+  const currentMessageIndex = Math.floor(
+    tick / 3
+  ) % (phaseMessages[pollState.phase as keyof typeof phaseMessages]?.length || 1);
 
   return (
-    <div dir="ltr" className="min-h-screen bg-zinc-950 text-zinc-100">
-      <div className="mx-auto w-full max-w-2xl px-4 sm:px-6 lg:px-8 py-16 sm:py-24">
-        <div className="rounded-3xl border border-indigo-500/30 bg-indigo-500/[0.07] p-8 sm:p-10">
-          <div className="flex items-center gap-3">
-            <span className="relative flex h-3 w-3">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-indigo-400 opacity-40" />
-              <span className="relative inline-flex h-3 w-3 rounded-full bg-indigo-400" />
-            </span>
-            <h1 className="text-2xl font-bold text-indigo-100">
-              {pollState.scanType === "paid" ? "Full scan" : "Free scan"} in progress
-            </h1>
+    <div dir="ltr" className="app-shell">
+      <div className="app-container max-w-2xl py-16 sm:py-24">
+        <div className="app-panel-strong app-soft-gradient rounded-[34px] p-8 sm:p-10">
+          <div className="flex items-center gap-4">
+            <Image src="/logo-clean.png" alt="GMC Unlock" width={360} height={90} unoptimized className="h-9 w-auto" />
+            <div>
+              <h1 className="app-title text-2xl font-semibold tracking-[-0.03em]">
+                {pollState.scanType === "paid" ? "Full scan" : "Free scan"} in progress
+              </h1>
+              <p className="mt-1 text-sm app-muted">GMC Unlock is actively analyzing the live storefront.</p>
+            </div>
           </div>
-          <p className="mt-2 text-sm text-zinc-400">
+          <p className="mt-2 text-sm app-muted">
             <span className="sr-only" aria-live="polite">
               {tick}
             </span>
             Elapsed {elapsed}s — you can keep this tab open; we update live as each stage finishes.
           </p>
           {scanUrl ? (
-            <p className="mt-3 text-sm text-zinc-300 break-all">
-              <span className="text-zinc-500">Target: </span>
+            <p className="mt-3 break-all text-sm text-slate-600">
+              <span className="text-slate-400">Target: </span>
               {scanUrl}
             </p>
           ) : null}
 
-          <div className="mt-8 rounded-2xl border border-white/10 bg-black/20 p-5">
-            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Current step</p>
-            <p className="mt-1 text-lg font-semibold text-white">{pollState.phaseLabel}</p>
-            <p className="mt-2 text-sm text-zinc-300 leading-relaxed">{pollState.detail}</p>
+          <div className="mt-6">
+            <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-400">
+              <span>Progress</span>
+              <span>{progressPercent}%</span>
+            </div>
+            <div className="mt-2 h-3 overflow-hidden rounded-full bg-slate-200">
+              <div
+                className="h-full rounded-full bg-[linear-gradient(90deg,#466bff,#8ea4ff)] transition-all duration-700"
+                style={{ width: `${Math.max(18, maxProgress)}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="mt-8 rounded-[24px] border border-slate-200 bg-white/85 p-5">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Current step</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{pollState.phaseLabel}</p>
+            <p className="mt-2 text-sm leading-relaxed text-slate-600">{pollState.detail}</p>
+          </div>
+
+          <div className="mt-5 rounded-[24px] border border-blue-200 bg-blue-50/80 px-5 py-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-blue-500">Live activity</p>
+            <p className="mt-2 text-base font-semibold text-slate-900">{currentMessage}</p>
+            <div className="mt-3 flex gap-2">
+              {(phaseMessages[pollState.phase as keyof typeof phaseMessages] ?? ["Processing your scan"]).map((_, idx) => (
+                <span
+                  key={idx}
+                  className={`h-2 rounded-full transition-all ${
+                    idx === currentMessageIndex ? "w-6 bg-blue-500" : "w-2 bg-blue-200"
+                  }`}
+                />
+              ))}
+            </div>
           </div>
 
           <ol className="mt-8 space-y-3">
@@ -238,21 +363,21 @@ function ScanProgressPanel({
               return (
                 <li
                   key={step.key}
-                  className={`flex items-start gap-3 rounded-xl border px-4 py-3 text-sm ${
+                  className={`flex items-start gap-3 rounded-[20px] border px-4 py-3 text-sm ${
                     active
-                      ? "border-indigo-500/50 bg-indigo-500/10 text-indigo-100"
+                      ? "border-blue-200 bg-blue-50 text-blue-700"
                       : done
-                        ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-100/90"
-                        : "border-white/5 bg-white/[0.02] text-zinc-500"
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                        : "border-slate-200 bg-white text-slate-400"
                   }`}
                 >
                   <span
                     className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
                       done
-                        ? "bg-emerald-500/30 text-emerald-100"
+                        ? "bg-emerald-500 text-white"
                         : active
-                          ? "bg-indigo-500/40 text-white"
-                          : "bg-white/10 text-zinc-500"
+                          ? "bg-blue-500 text-white"
+                          : "bg-slate-100 text-slate-400"
                     }`}
                   >
                     {done ? "✓" : idx + 1}
@@ -297,6 +422,38 @@ function parseProfileFromQuery(searchParams: URLSearchParams): UserProfile {
   };
 }
 
+function parseProfileFromUnknown(raw: unknown, fallback: UserProfile): UserProfile {
+  if (!raw || typeof raw !== "object") return fallback;
+  const input = raw as Partial<UserProfile>;
+  return {
+    business_type:
+      input.business_type === "ecommerce" ||
+      input.business_type === "service_provider" ||
+      input.business_type === "leads_only" ||
+      input.business_type === "other"
+        ? input.business_type
+        : fallback.business_type,
+    platform:
+      input.platform === "shopify" ||
+      input.platform === "woocommerce" ||
+      input.platform === "wix" ||
+      input.platform === "other"
+        ? input.platform
+        : fallback.platform,
+    blocked_where:
+      input.blocked_where === "merchant_center" ||
+      input.blocked_where === "google_ads" ||
+      input.blocked_where === "both" ||
+      input.blocked_where === "proactive"
+        ? input.blocked_where
+        : fallback.blocked_where,
+    has_gmb:
+      input.has_gmb === true || input.has_gmb === false || input.has_gmb === null
+        ? input.has_gmb
+        : fallback.has_gmb,
+  };
+}
+
 function scoreToColor(score: number) {
   if (score < 50) return "red";
   if (score <= 89) return "yellow";
@@ -306,11 +463,11 @@ function scoreToColor(score: number) {
 function colorClasses(color: "red" | "yellow" | "green") {
   switch (color) {
     case "red":
-      return { ring: "ring-red-500/30", border: "border-red-500/30", bg: "bg-red-500/10", text: "text-red-200", dot: "bg-red-400" };
+      return { ring: "ring-red-100", border: "border-red-200", bg: "bg-red-50", text: "text-red-600", dot: "bg-red-400" };
     case "yellow":
-      return { ring: "ring-yellow-500/30", border: "border-yellow-500/30", bg: "bg-yellow-500/10", text: "text-yellow-200", dot: "bg-yellow-400" };
+      return { ring: "ring-amber-100", border: "border-amber-200", bg: "bg-amber-50", text: "text-amber-600", dot: "bg-amber-400" };
     case "green":
-      return { ring: "ring-emerald-500/30", border: "border-emerald-500/30", bg: "bg-emerald-500/10", text: "text-emerald-200", dot: "bg-emerald-400" };
+      return { ring: "ring-emerald-100", border: "border-emerald-200", bg: "bg-emerald-50", text: "text-emerald-600", dot: "bg-emerald-400" };
   }
 }
 
@@ -346,15 +503,15 @@ function SemiCircleGauge({ score }: { score: number }) {
       <div className="flex items-center justify-center">
         <svg width="100%" height="110" viewBox="0 0 200 110" role="img" aria-label="Compliance gauge">
           <defs>
-            <linearGradient id="dangerGrad" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0" stopColor="#ef4444" />
-              <stop offset="1" stopColor="#fb7185" />
+            <linearGradient id="scoreGrad" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stopColor="#466bff" />
+              <stop offset="1" stopColor="#9aaeff" />
             </linearGradient>
           </defs>
-          <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth={stroke} strokeLinecap="round" />
-          <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="url(#dangerGrad)" strokeWidth={stroke} strokeLinecap="round" strokeDasharray={`${filled} ${remaining}`} />
-          <text x="100" y="95" textAnchor="middle" fill="white" fontSize="26" fontWeight="800">{score}</text>
-          <text x="100" y="106" textAnchor="middle" fill="rgba(255,255,255,0.65)" fontSize="10" fontWeight="700">score</text>
+          <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="rgba(148,163,184,0.22)" strokeWidth={stroke} strokeLinecap="round" />
+          <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="url(#scoreGrad)" strokeWidth={stroke} strokeLinecap="round" strokeDasharray={`${filled} ${remaining}`} />
+          <text x="100" y="95" textAnchor="middle" fill="#111827" fontSize="26" fontWeight="800">{score}</text>
+          <text x="100" y="106" textAnchor="middle" fill="#94a3b8" fontSize="10" fontWeight="700">score</text>
         </svg>
       </div>
     </div>
@@ -362,18 +519,74 @@ function SemiCircleGauge({ score }: { score: number }) {
 }
 
 function LoadingState({ scanType }: { scanType: ScanType }) {
+  const [tick, setTick] = useState(0);
+  const [startedAt] = useState(() => Date.now());
+  useEffect(() => {
+    const i = window.setInterval(() => setTick((x) => x + 1), 1000);
+    return () => window.clearInterval(i);
+  }, []);
+
+  const messages =
+    scanType === "paid"
+      ? [
+          "Opening the live site and checking public trust signals",
+          "Preparing connected Google and Shopify checks where available",
+          "Building a full report you can actually use with clients",
+        ]
+      : [
+          "Opening the live site and mapping important pages",
+          "Checking trust signals, policies, and business identity",
+          "Preparing clear public findings while PageSpeed loads later in the report",
+        ];
+  const currentMessage = rotatingMessage(messages, tick);
+  const currentMessageIndex = Math.floor(tick / 3) % messages.length;
+  const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+  const progressPercent = Math.min(92, 14 + elapsed * 2);
+
   return (
-    <div dir="ltr" className="min-h-screen bg-zinc-950 text-zinc-100">
-      <div className="mx-auto w-full max-w-5xl px-4 sm:px-6 lg:px-8 py-20">
-        <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-8">
-          <h1 className="text-2xl font-bold">
-            Running {scanType === "paid" ? "full" : "free"} scan...
-          </h1>
-          <p className="mt-2 text-zinc-300">
+    <div dir="ltr" className="app-shell">
+      <div className="app-container max-w-3xl py-20">
+        <div className="app-panel-strong app-soft-gradient rounded-[34px] p-8 sm:p-10">
+          <div className="flex items-center gap-4">
+            <Image src="/logo-clean.png" alt="GMC Unlock" width={360} height={90} unoptimized className="h-9 w-auto" />
+            <div>
+              <h1 className="app-title text-2xl font-semibold tracking-[-0.03em]">
+                Running {scanType === "paid" ? "full" : "free"} scan...
+              </h1>
+              <p className="mt-1 text-sm app-muted">GMC Unlock is preparing the scan pipeline.</p>
+            </div>
+          </div>
+          <p className="mt-4 max-w-2xl text-base leading-7 app-muted">
             {scanType === "paid"
-              ? "Collecting PageSpeed, crawl, Google, and Shopify signals."
-              : "Collecting PageSpeed + basic crawl signals for a quick risk snapshot."}
+              ? "We are collecting live storefront evidence first, then the report will fill in deeper connected signals."
+              : "We are collecting live storefront evidence first so the report appears quickly and stays easy to understand."}
           </p>
+          <div className="mt-6">
+            <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-400">
+              <span>Preparing</span>
+              <span>Live</span>
+            </div>
+            <div className="mt-2 h-3 overflow-hidden rounded-full bg-slate-200">
+              <div
+                className="h-full rounded-full bg-[linear-gradient(90deg,#466bff,#8ea4ff)] transition-all duration-700"
+                style={{ width: `${progressPercent}%` }}
+              />
+            </div>
+          </div>
+          <div className="mt-6 rounded-[24px] border border-blue-200 bg-blue-50/80 px-5 py-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-blue-500">Live activity</p>
+            <p className="mt-2 text-base font-semibold text-slate-900">{currentMessage}</p>
+            <div className="mt-3 flex gap-2">
+              {messages.map((_, idx) => (
+                <span
+                  key={idx}
+                  className={`h-2 rounded-full transition-all ${
+                    idx === currentMessageIndex ? "w-6 bg-blue-500" : "w-2 bg-blue-200"
+                  }`}
+                />
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -396,6 +609,7 @@ function ReportPageClient() {
   } | null>(null);
   const [expandedCriticalId, setExpandedCriticalId] = useState<string>("");
   const [scanUrl, setScanUrl] = useState("");
+  const [pagespeedRefreshState, setPagespeedRefreshState] = useState<"idle" | "refreshing" | "loaded">("idle");
 
   const scanId = useMemo(() => searchParams.get("scan_id")?.trim() ?? "", [searchParams]);
   const url = useMemo(() => searchParams.get("url")?.trim() ?? "", [searchParams]);
@@ -419,10 +633,18 @@ function ReportPageClient() {
     () => searchParams.get("shopify_error")?.trim() ?? "",
     [searchParams]
   );
-  const profile = useMemo(() => parseProfileFromQuery(searchParams), [searchParams]);
+  const queryProfile = useMemo(() => parseProfileFromQuery(searchParams), [searchParams]);
   const [shopDomain, setShopDomain] = useState(searchParams.get("shop")?.trim() ?? "");
   const [shopifyConnected, setShopifyConnected] = useState(false);
   const [connectError, setConnectError] = useState("");
+  const pagespeedSource =
+    data?.pagespeed.source ?? ((data?.pagespeed.performance ?? 0) > 0 ? "live" : "unavailable");
+  const currentProfileKey = JSON.stringify(data?.profile ?? null) + JSON.stringify(queryProfile);
+  const currentProfile = useMemo(
+    () => parseProfileFromUnknown(data?.profile, queryProfile),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [currentProfileKey]
+  );
 
   function buildPaidReturnToPath() {
     const qs = new URLSearchParams();
@@ -430,10 +652,10 @@ function ReportPageClient() {
     const chosenUrl = url || scanUrl || data?.url || "";
     if (chosenUrl) qs.set("url", chosenUrl);
     qs.set("scan_type", "paid");
-    qs.set("business_type", profile.business_type);
-    qs.set("platform", profile.platform);
-    qs.set("blocked_where", profile.blocked_where);
-    qs.set("has_gmb", String(profile.has_gmb));
+    qs.set("business_type", currentProfile.business_type);
+    qs.set("platform", currentProfile.platform);
+    qs.set("blocked_where", currentProfile.blocked_where);
+    qs.set("has_gmb", String(currentProfile.has_gmb));
     if (shopDomain.trim()) qs.set("shop", shopDomain.trim());
     return `/report?${qs.toString()}`;
   }
@@ -444,10 +666,10 @@ function ReportPageClient() {
     const chosenUrl = url || scanUrl || data?.url || "";
     if (chosenUrl) qs.set("url", chosenUrl);
     qs.set("scan_type", queryScanType);
-    qs.set("business_type", profile.business_type);
-    qs.set("platform", profile.platform);
-    qs.set("blocked_where", profile.blocked_where);
-    qs.set("has_gmb", String(profile.has_gmb));
+    qs.set("business_type", currentProfile.business_type);
+    qs.set("platform", currentProfile.platform);
+    qs.set("blocked_where", currentProfile.blocked_where);
+    qs.set("has_gmb", String(currentProfile.has_gmb));
     if (shopDomain.trim()) qs.set("shop", shopDomain.trim());
     return `/report?${qs.toString()}`;
   }
@@ -471,6 +693,22 @@ function ReportPageClient() {
     router.push(buildPaidReturnToPath());
   }
 
+  function retryCurrentScan() {
+    if (url) {
+      const qs = new URLSearchParams();
+      qs.set("url", url);
+      qs.set("scan_type", queryScanType);
+      qs.set("business_type", currentProfile.business_type);
+      qs.set("platform", currentProfile.platform);
+      qs.set("blocked_where", currentProfile.blocked_where);
+      qs.set("has_gmb", String(currentProfile.has_gmb));
+      if (shopDomain.trim()) qs.set("shop", shopDomain.trim());
+      router.push(`/report?${qs.toString()}`);
+      return;
+    }
+    window.location.reload();
+  }
+
   useEffect(() => {
     const ac = new AbortController();
     async function loadConnections() {
@@ -487,7 +725,7 @@ function ReportPageClient() {
       }
     }
     void loadConnections();
-    return () => ac.abort();
+    return () => { try { ac.abort(); } catch { /* cleanup */ } };
   }, []);
 
   useEffect(() => {
@@ -511,6 +749,7 @@ function ReportPageClient() {
         scan_type: json.data.scan_type ?? "free",
         google_connected: json.data.google_connected ?? false,
         url: json.data.url,
+        profile: json.data.profile,
         fingerprint: json.data.fingerprint ?? json.data.crawl?.fingerprint ?? null,
         pagespeed: json.data.pagespeed,
         crawl: json.data.crawl,
@@ -552,7 +791,7 @@ function ReportPageClient() {
     async function runScan() {
       if (!url) throw new Error("Missing URL in query params.");
       const endpoint = queryScanType === "paid" ? "/api/scan/full" : "/api/scan/free";
-      let body: Record<string, unknown> = { url, profile };
+      let body: Record<string, unknown> = { url, profile: currentProfile };
       if (queryScanType === "paid") {
         const paymentTokenRes = await fetch("/api/scan/payment-token", {
           method: "POST",
@@ -592,7 +831,9 @@ function ReportPageClient() {
           detail: "Your scan is running on the server. This page will update automatically.",
           startedAt: Date.now(),
         });
-        router.replace(`/report/${payload.scan_id}`);
+        const u = new URL(window.location.href);
+        u.searchParams.set("scan_id", payload.scan_id);
+        window.history.replaceState(null, "", u.toString());
         return;
       }
       const complete = payload as ScanPayload;
@@ -600,7 +841,9 @@ function ReportPageClient() {
       setData(complete);
       setExpandedCriticalId(complete.analysis.critical_issues[0]?.item_id?.toString() ?? "");
       if (complete.scan_id) {
-        router.replace(`/report/${complete.scan_id}`);
+        const u = new URL(window.location.href);
+        u.searchParams.set("scan_id", complete.scan_id);
+        window.history.replaceState(null, "", u.toString());
       }
     }
 
@@ -630,24 +873,49 @@ function ReportPageClient() {
 
     return () => {
       mounted = false;
-      if (!controller.signal.aborted) {
-        controller.abort();
-      }
+      try { if (!controller.signal.aborted) controller.abort(); } catch { /* cleanup */ }
     };
-  }, [scanId, url, queryScanType, profile, router]);
+    // currentProfile and router are intentionally excluded — currentProfile derives from data
+    // which is set inside this effect (would create infinite loop), router is only used for
+    // navigation buttons, not for the init logic.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanId, url, queryScanType]);
 
   useEffect(() => {
     if (!pollState?.scanId) return;
     const id = pollState.scanId;
+    const startedAt = pollState.startedAt;
     const ac = new AbortController();
     let intervalId: ReturnType<typeof setInterval> | undefined;
+    let consecutiveFailures = 0;
+    const MAX_POLL_MS = 210_000;
 
     async function tick() {
       try {
         const st = await fetch(`/api/scan/status/${encodeURIComponent(id)}`, { signal: ac.signal });
         const sj = (await st.json()) as ScanStatusApiResponse;
         if (ac.signal.aborted) return;
-        if (!st.ok || !sj.ok) return;
+        if (!st.ok || !sj.ok) {
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= 3) {
+            if (intervalId) clearInterval(intervalId);
+            setPollState(null);
+            setError(
+              !sj.ok && sj.error
+                ? sj.error
+                : "Could not read scan status. Please retry the scan."
+            );
+          }
+          return;
+        }
+        consecutiveFailures = 0;
+
+        if (Date.now() - startedAt > MAX_POLL_MS) {
+          if (intervalId) clearInterval(intervalId);
+          setPollState(null);
+          setError("Scan is taking longer than expected. Please retry.");
+          return;
+        }
 
         setPollState((prev) =>
           prev && prev.scanId === id
@@ -666,7 +934,11 @@ function ReportPageClient() {
           const full = await fetch(`/api/scan/results/${encodeURIComponent(id)}`, { signal: ac.signal });
           const fj = (await full.json()) as StoredScanResponse;
           if (ac.signal.aborted) return;
-          if (!full.ok || !fj.ok) return;
+          if (!full.ok || !fj.ok) {
+            setPollState(null);
+            setError(!fj.ok && fj.error ? fj.error : "Scan completed but result could not be loaded.");
+            return;
+          }
           setPollState(null);
           setScanUrl(fj.data.url);
           setData({
@@ -674,13 +946,16 @@ function ReportPageClient() {
             scan_type: fj.data.scan_type ?? "free",
             google_connected: fj.data.google_connected ?? false,
             url: fj.data.url,
+            profile: fj.data.profile,
             fingerprint: fj.data.fingerprint ?? fj.data.crawl?.fingerprint ?? null,
             pagespeed: fj.data.pagespeed,
             crawl: fj.data.crawl,
             analysis: fj.data.analysis,
           });
           setExpandedCriticalId(fj.data.analysis.critical_issues[0]?.item_id?.toString() ?? "");
-          router.replace(`/report/${fj.data.scan_id}`);
+          const pu = new URL(window.location.href);
+          pu.searchParams.set("scan_id", fj.data.scan_id);
+          window.history.replaceState(null, "", pu.toString());
         }
 
         if (sj.data.status === "error") {
@@ -696,10 +971,36 @@ function ReportPageClient() {
     intervalId = setInterval(() => void tick(), 1500);
     void tick();
     return () => {
-      ac.abort();
+      try { ac.abort(); } catch { /* cleanup */ }
       if (intervalId) clearInterval(intervalId);
     };
-  }, [pollState?.scanId, router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pollState?.scanId, pollState?.startedAt]);
+
+  useEffect(() => {
+    if (!data?.url || pagespeedSource === "live" || pagespeedSource === "cached" || pagespeedRefreshState !== "idle") return;
+    let cancelled = false;
+    setPagespeedRefreshState("refreshing");
+
+    fetch("/api/scan/pagespeed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: data.url }),
+    })
+      .then((res) => res.json())
+      .then((json) => {
+        if (cancelled) return;
+        if (json?.ok && json?.data) {
+          setData((prev) => prev ? { ...prev, pagespeed: json.data } : prev);
+        }
+        setPagespeedRefreshState("loaded");
+      })
+      .catch(() => {
+        if (!cancelled) setPagespeedRefreshState("loaded");
+      });
+
+    return () => { cancelled = true; };
+  }, [data?.url, pagespeedRefreshState, pagespeedSource]);
 
   if (pollState) {
     return <ScanProgressPanel pollState={pollState} scanUrl={scanUrl} />;
@@ -709,12 +1010,12 @@ function ReportPageClient() {
 
   if (error || !data) {
     return (
-      <div dir="ltr" className="min-h-screen bg-zinc-950 text-zinc-100">
-        <div className="mx-auto w-full max-w-4xl px-4 sm:px-6 lg:px-8 py-20">
-          <div className="rounded-3xl border border-red-500/30 bg-red-500/10 p-8">
-            <h1 className="text-2xl font-bold text-red-200">Scan failed</h1>
-            <p className="mt-2 text-red-100/90">{error ?? "No data returned from scan."}</p>
-            <button type="button" onClick={() => window.location.reload()} className="mt-6 h-11 px-5 rounded-xl bg-white/10 border border-white/20 hover:bg-white/15 transition-colors">
+      <div dir="ltr" className="app-shell">
+        <div className="app-container py-20">
+          <div className="app-panel rounded-[32px] border-red-200 bg-red-50 p-8">
+            <h1 className="text-2xl font-semibold text-red-700">Scan failed</h1>
+            <p className="mt-2 text-red-600">{error ?? "No data returned from scan."}</p>
+            <button type="button" onClick={retryCurrentScan} className="app-button-secondary mt-6 h-11 px-5 text-sm font-semibold">
               Retry
             </button>
           </div>
@@ -740,7 +1041,45 @@ function ReportPageClient() {
     Object.values(businessFingerprint).some((v) => v != null && String(v).trim() !== "");
   const pagesScanned = data.crawl.pages?.length ?? 0;
   const internalLinksFound = data.crawl.allLinksFound?.length ?? 0;
-  const quickWins = data.analysis.recommendations.slice(0, isFree ? 5 : 3);
+  const quickWins = data.analysis.recommendations
+    .filter(
+      (item) =>
+        !(
+          item.item_id === 7 &&
+          /retry pagespeed/i.test(item.title) &&
+          pagespeedSource !== "unavailable"
+        )
+    )
+    .slice(0, isFree ? 5 : 3);
+  const summaryHeadline =
+    pagespeedSource !== "unavailable"
+      ? data.analysis.headline.replace(
+          "PageSpeed unavailable in this run",
+          pagespeedSource === "cached"
+            ? `PageSpeed ${data.pagespeed.performance}/100 (cached snapshot)`
+            : `PageSpeed ${data.pagespeed.performance}/100`
+        )
+      : data.analysis.headline;
+  const crawlEvidenceBundle = [
+    data.crawl.pages?.map((page) => `${page.url}\n${page.text}`).join("\n") ?? "",
+    data.crawl.allLinksFound?.join(" ") ?? "",
+    data.crawl.robotsTxt ?? "",
+  ].join("\n");
+  const trustSignals = [
+    { label: "Privacy policy", found: /privacy|פרטיות|privacy-policy/i.test(crawlEvidenceBundle) },
+    { label: "Terms", found: /terms|תקנון|תנאי|terms-of-service/i.test(crawlEvidenceBundle) },
+    { label: "Returns", found: /refund|return|החזר|החזרות|refund-policy/i.test(crawlEvidenceBundle) },
+    { label: "Shipping", found: /shipping|delivery|משלוח|shipping-policy/i.test(crawlEvidenceBundle) },
+    { label: "About page", found: /\/about\b|\/pages\/about\b|אודות|עלינו/i.test(crawlEvidenceBundle) },
+    { label: "Product path", found: /\/products?\//i.test(crawlEvidenceBundle) },
+  ];
+  const pagespeedUnavailable = pagespeedSource === "unavailable";
+  const pagespeedCached = pagespeedSource === "cached";
+  const pagespeedSnapshotLabel = pagespeedUnavailable
+    ? "Unavailable snapshot"
+    : pagespeedCached
+    ? "Cached snapshot"
+    : "Live snapshot";
   const coverageCards = [
     {
       label: "Pages scanned",
@@ -772,62 +1111,86 @@ function ReportPageClient() {
   ];
 
   return (
-    <div dir="ltr" className="min-h-screen bg-zinc-950 text-zinc-100">
-      <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8 py-14 sm:py-20">
-        <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:p-8">
+    <div dir="ltr" className="app-shell">
+      <div className="app-container py-8 sm:py-10">
+        <div className="app-frame rounded-[36px] p-6 sm:p-8">
           <div className="flex flex-col lg:flex-row gap-8 lg:items-center lg:justify-between">
             <div>
-              <p className="text-sm text-zinc-400">Scanned URL</p>
-              <h1 className="mt-2 break-all text-xl sm:text-2xl font-bold">{scanUrl || data.url || "—"}</h1>
+              <p className="app-section-label">Scanned URL</p>
+              <h1 className="app-title mt-2 break-all text-2xl font-semibold tracking-[-0.04em] sm:text-3xl">
+                {scanUrl || data.url || "—"}
+              </h1>
               <div className="mt-4 flex flex-wrap gap-3">
-                <span className="inline-flex items-center rounded-full border border-indigo-500/25 bg-indigo-500/10 px-4 py-2 text-sm font-semibold text-indigo-200">
-                  {isFree ? "FREE PUBLIC SCAN" : "PAID FULL SCAN"}
-                </span>
+                <BrandBadge
+                  label={isFree ? "Free public scan" : "Paid full scan"}
+                  tone="slate"
+                  icon={<TrustIcon />}
+                />
+                <BrandBadge
+                  label={`PageSpeed: ${pagespeedSnapshotLabel}`}
+                  tone={pagespeedUnavailable ? "amber" : pagespeedCached ? "blue" : "emerald"}
+                  icon={<PageSpeedIcon />}
+                />
                 {!isFree ? (
-                  <span className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-zinc-300">
-                    Google: {data.google_connected ? "Connected" : "Not connected"}
-                  </span>
+                  <BrandBadge
+                    label={`Google: ${data.google_connected ? "Connected" : "Not connected"}`}
+                    tone={data.google_connected ? "emerald" : "slate"}
+                    icon={<MerchantIcon />}
+                  />
                 ) : null}
               </div>
+              <p className="mt-5 max-w-2xl text-sm leading-7 app-muted">
+                A polished storefront report that combines public trust evidence, business identity,
+                recommendation logic, and connected sources when available.
+              </p>
             </div>
             <SemiCircleGauge score={score} />
           </div>
         </div>
 
         {showBusinessIdentity && businessFingerprint ? (
-          <div className="mt-7 rounded-3xl border border-emerald-500/25 bg-emerald-500/[0.07] p-6 sm:p-7">
-            <h2 className="text-lg sm:text-xl font-bold text-emerald-100">Business Identity</h2>
-            <p className="mt-2 text-sm text-zinc-300">
+          <div className="mt-7 app-frame rounded-[32px] p-6 sm:p-7">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="app-section-label">Business identity</p>
+                <h2 className="mt-2 text-lg font-semibold tracking-[-0.02em] text-slate-900 sm:text-xl">Live storefront fingerprint</h2>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <BrandBadge label={businessFingerprint.platform ?? "Platform unknown"} tone="emerald" icon={<ShopifyIcon />} />
+                <BrandBadge label={businessFingerprint.siteType ?? "Site type unknown"} tone="blue" icon={<TrustIcon />} />
+              </div>
+            </div>
+            <p className="mt-2 text-sm app-muted">
               This is what we scanned — detected from your live website before analysis. Use it to confirm we hit the right business.
             </p>
-            <div className="mt-5 divide-y divide-white/5 rounded-2xl border border-white/10 bg-white/[0.03] px-4">
+            <div className="mt-5 divide-y divide-slate-100 rounded-[24px] border border-slate-200 bg-white px-4">
               <div className="flex flex-col sm:flex-row sm:justify-between gap-1 py-3">
-                <span className="text-xs text-zinc-500 uppercase tracking-wide font-semibold">Business name</span>
-                <span className="text-sm text-zinc-100 break-all sm:text-right">{businessFingerprint.businessName ?? "—"}</span>
+                <span className="text-xs uppercase tracking-wide font-semibold text-slate-400">Business name</span>
+                <span className="text-sm break-all text-slate-900 sm:text-right">{businessFingerprint.businessName ?? "—"}</span>
               </div>
               <div className="flex flex-col sm:flex-row sm:justify-between gap-1 py-3">
-                <span className="text-xs text-zinc-500 uppercase tracking-wide font-semibold">Email found</span>
-                <span className="text-sm text-zinc-100 break-all sm:text-right">{businessFingerprint.email ?? "—"}</span>
+                <span className="text-xs uppercase tracking-wide font-semibold text-slate-400">Email found</span>
+                <span className="text-sm break-all text-slate-900 sm:text-right">{businessFingerprint.email ?? "—"}</span>
               </div>
               <div className="flex flex-col sm:flex-row sm:justify-between gap-1 py-3">
-                <span className="text-xs text-zinc-500 uppercase tracking-wide font-semibold">Phone found</span>
-                <span className="text-sm text-zinc-100 break-all sm:text-right">{businessFingerprint.phone ?? "—"}</span>
+                <span className="text-xs uppercase tracking-wide font-semibold text-slate-400">Phone found</span>
+                <span className="text-sm break-all text-slate-900 sm:text-right">{businessFingerprint.phone ?? "—"}</span>
               </div>
               <div className="flex flex-col sm:flex-row sm:justify-between gap-1 py-3">
-                <span className="text-xs text-zinc-500 uppercase tracking-wide font-semibold">Platform detected</span>
-                <span className="text-sm text-zinc-100 sm:text-right">{businessFingerprint.platform ?? "—"}</span>
+                <span className="text-xs uppercase tracking-wide font-semibold text-slate-400">Platform detected</span>
+                <span className="text-sm text-slate-900 sm:text-right">{businessFingerprint.platform ?? "—"}</span>
               </div>
               <div className="flex flex-col sm:flex-row sm:justify-between gap-1 py-3">
-                <span className="text-xs text-zinc-500 uppercase tracking-wide font-semibold">Site type detected</span>
-                <span className="text-sm text-zinc-100 sm:text-right">{businessFingerprint.siteType ?? "—"}</span>
+                <span className="text-xs uppercase tracking-wide font-semibold text-slate-400">Site type detected</span>
+                <span className="text-sm text-slate-900 sm:text-right">{businessFingerprint.siteType ?? "—"}</span>
               </div>
               <div className="flex flex-col sm:flex-row sm:justify-between gap-1 py-3">
-                <span className="text-xs text-zinc-500 uppercase tracking-wide font-semibold">Address hint</span>
-                <span className="text-sm text-zinc-100 break-all sm:text-right">{businessFingerprint.address ?? "—"}</span>
+                <span className="text-xs uppercase tracking-wide font-semibold text-slate-400">Address hint</span>
+                <span className="text-sm break-all text-slate-900 sm:text-right">{businessFingerprint.address ?? "—"}</span>
               </div>
               <div className="flex flex-col sm:flex-row sm:justify-between gap-1 py-3">
-                <span className="text-xs text-zinc-500 uppercase tracking-wide font-semibold">Language / country / currency</span>
-                <span className="text-sm text-zinc-100 sm:text-right">
+                <span className="text-xs uppercase tracking-wide font-semibold text-slate-400">Language / country / currency</span>
+                <span className="text-sm text-slate-900 sm:text-right">
                   {[businessFingerprint.language, businessFingerprint.country, businessFingerprint.currency]
                     .filter(Boolean)
                     .join(" · ") || "—"}
@@ -838,24 +1201,45 @@ function ReportPageClient() {
         ) : null}
 
         {isFree ? (
-          <div className="mt-6 rounded-3xl border border-indigo-500/25 bg-indigo-500/10 p-6">
-            <h2 className="text-xl font-bold text-indigo-100">Upgrade to Full Scan — $99</h2>
-            <p className="mt-2 text-zinc-200/90">
-              Unlock real Google evidence, optional Shopify store data, the full 77-rule engine, and cross-source consistency diagnostics.
+          <div className="mt-6 app-frame rounded-[32px] p-6">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <p className="app-section-label">Upgrade to full scan</p>
+                <h2 className="mt-2 text-3xl font-semibold tracking-[-0.03em] text-slate-900">$99 connected diagnosis</h2>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <BrandBadge
+                  label={`Google ${data.google_connected || googleConnectedParam ? "Connected" : "Required"}`}
+                  tone={data.google_connected || googleConnectedParam ? "emerald" : "slate"}
+                  icon={<MerchantIcon />}
+                />
+                <BrandBadge
+                  label={`Shopify ${shopifyConnected ? "Connected" : "Optional"}`}
+                  tone={shopifyConnected ? "emerald" : "slate"}
+                  icon={<ShopifyIcon />}
+                />
+                <BrandBadge label="Google Ads" tone="amber" icon={<AdsIcon />} />
+              </div>
+            </div>
+            <p className="mt-2 max-w-3xl text-sm leading-7 app-muted">
+              Move from public warning signs into the connected recovery workflow: real Google evidence, optional Shopify store data, and deeper consistency analysis before the next review or appeal.
             </p>
-            <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
-              <span className={`rounded-full border px-3 py-1 ${data.google_connected || googleConnectedParam ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-100" : "border-white/10 bg-white/[0.04] text-zinc-300"}`}>
-                Google: {data.google_connected || googleConnectedParam ? "Connected" : "Required"}
-              </span>
-              <span className={`rounded-full border px-3 py-1 ${shopifyConnected ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-100" : "border-white/10 bg-white/[0.04] text-zinc-300"}`}>
-                Shopify: {shopifyConnected ? "Connected" : "Optional"}
-              </span>
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              {[
+                "See what Google data says, not just what the public site shows",
+                "Compare website signals against connected store and account data",
+                "Turn the scan into a serious repair workflow for blocked or risky stores",
+              ].map((item) => (
+                <div key={item} className="rounded-[20px] border border-slate-200 bg-white px-4 py-4 text-sm text-slate-700">
+                  {item}
+                </div>
+              ))}
             </div>
             <div className="mt-4 flex flex-col gap-3">
               <button
                 type="button"
                 onClick={onConnectGoogle}
-                className="h-11 px-5 rounded-xl font-semibold bg-indigo-500 hover:bg-indigo-400 text-zinc-950 transition-colors"
+                className="app-button-primary h-11 px-5 text-sm font-semibold"
               >
                 {data.google_connected || googleConnectedParam ? "Reconnect Google" : "Connect Google"}
               </button>
@@ -865,12 +1249,12 @@ function ReportPageClient() {
                   value={shopDomain}
                   onChange={(e) => setShopDomain(e.target.value)}
                   placeholder="store.myshopify.com"
-                  className="h-11 flex-1 rounded-xl border border-white/10 bg-black/20 px-4 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-400/50"
+                  className="app-input h-11 flex-1 px-4 text-sm outline-none focus:ring-4 focus:ring-blue-100"
                 />
                 <button
                   type="button"
                   onClick={onConnectShopify}
-                  className="h-11 rounded-xl border border-white/15 bg-white/[0.05] px-5 font-semibold text-zinc-100 hover:bg-white/[0.1] transition-colors"
+                  className="app-button-secondary h-11 px-5 text-sm font-semibold"
                 >
                   {shopifyConnected ? "Reconnect Shopify" : "Connect Shopify"}
                 </button>
@@ -880,98 +1264,162 @@ function ReportPageClient() {
                 onClick={onStartFullScan}
                 disabled={!data.google_connected && !googleConnectedParam}
                 className={[
-                  "h-11 rounded-xl px-5 font-semibold transition-colors",
+                  "h-11 rounded-[18px] px-5 font-semibold transition-colors",
                   !data.google_connected && !googleConnectedParam
-                    ? "bg-white/10 text-zinc-400 cursor-not-allowed"
-                    : "bg-white text-zinc-950 hover:bg-zinc-200",
+                    ? "bg-slate-200 text-slate-400 cursor-not-allowed"
+                    : "app-button-primary",
                 ].join(" ")}
               >
                 Start Full Scan
               </button>
-              {connectError ? <p className="text-sm text-red-300">{connectError}</p> : null}
+              {connectError ? <p className="text-sm text-red-500">{connectError}</p> : null}
             </div>
           </div>
         ) : null}
 
         {googleConnectedParam ? (
-          <div className="mt-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+          <div className="mt-6 rounded-[22px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
             Google connected successfully. Continuing with paid scan data sources.
           </div>
         ) : null}
         {googleErrorParam ? (
-          <div className="mt-6 rounded-2xl border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-100">
+          <div className="mt-6 rounded-[22px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
             Google connection warning: {googleErrorParam}
           </div>
         ) : null}
         {shopifyConnectedParam ? (
-          <div className="mt-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+          <div className="mt-6 rounded-[22px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
             Shopify connected successfully. Full scan can now include store-side data.
           </div>
         ) : null}
         {shopifyErrorParam ? (
-          <div className="mt-6 rounded-2xl border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-100">
+          <div className="mt-6 rounded-[22px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
             Shopify connection warning: {shopifyErrorParam}
           </div>
         ) : null}
 
-        <div className="mt-7 rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:p-7">
-          <h2 className="text-lg sm:text-xl font-bold">
+        <div className="mt-7 app-panel rounded-[32px] p-6 sm:p-7">
+          <h2 className="app-title text-lg font-semibold tracking-[-0.02em] sm:text-xl">
             {isFree ? "Public Scan Summary" : "Executive Summary"}
           </h2>
-          <p className="mt-3 text-sm sm:text-base text-zinc-100/90">{data.analysis.headline}</p>
+          <p className="mt-3 text-sm leading-7 text-slate-600 sm:text-base">{summaryHeadline}</p>
         </div>
 
         {isFree ? (
-          <div className="mt-7 rounded-3xl border border-cyan-500/25 bg-cyan-500/[0.06] p-6 sm:p-7">
+          <div className="mt-7 app-panel rounded-[32px] p-6 sm:p-7">
             <div className="flex items-center justify-between gap-4">
               <div>
-                <h2 className="text-lg sm:text-xl font-bold text-cyan-100">Public Scan Coverage</h2>
-                <p className="mt-2 text-sm text-zinc-300">
+                <h2 className="app-title text-lg font-semibold tracking-[-0.02em] sm:text-xl">Public Scan Coverage</h2>
+                <p className="mt-2 text-sm app-muted">
                   What the free scanner actually collected before generating recommendations.
                 </p>
               </div>
-              <span className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1 text-xs font-semibold text-cyan-100">
+              <span className="app-chip text-xs font-semibold">
                 Crawl + PageSpeed
               </span>
             </div>
             <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
               {coverageCards.map((card) => (
-                <div key={card.label} className="rounded-2xl border border-white/10 bg-black/20 px-4 py-4">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{card.label}</p>
-                  <p className="mt-2 text-3xl font-extrabold text-white">{card.value}</p>
-                  <p className="mt-2 text-xs leading-relaxed text-zinc-300">{card.hint}</p>
+                <div key={card.label} className="rounded-[24px] border border-slate-200 bg-white px-4 py-4">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{card.label}</p>
+                  <p className="mt-2 text-3xl font-semibold text-slate-900">{card.value}</p>
+                  <p className="mt-2 text-xs leading-relaxed text-slate-500">{card.hint}</p>
                 </div>
               ))}
             </div>
           </div>
         ) : null}
 
-        <div className="mt-7 rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:p-7">
+        {isFree && (data.crawl.pages?.length ?? 0) > 0 ? (
+          <div className="mt-7 app-panel rounded-[32px] p-6 sm:p-7">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h2 className="app-title text-lg font-semibold tracking-[-0.02em] sm:text-xl">Pages We Scanned</h2>
+                <p className="mt-2 text-sm app-muted">
+                  These are the public pages we actually read before generating the report.
+                </p>
+              </div>
+              <span className="app-chip text-xs font-semibold">
+                {data.crawl.pages?.length ?? 0} pages
+              </span>
+            </div>
+            <div className="mt-5 grid grid-cols-1 gap-3">
+              {(data.crawl.pages ?? []).map((pageItem) => (
+                <div key={pageItem.url} className="rounded-[20px] border border-slate-200 bg-white px-4 py-4">
+                  <p className="text-sm font-semibold text-slate-900 break-all">{pageItem.url}</p>
+                  <p className="mt-2 text-xs leading-relaxed text-slate-500">
+                    {pageItem.text.slice(0, 180)}
+                    {pageItem.text.length > 180 ? "..." : ""}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {isFree ? (
+          <div className="mt-7 app-panel rounded-[32px] p-6 sm:p-7">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h2 className="app-title text-lg font-semibold tracking-[-0.02em] sm:text-xl">Detected Trust Signals</h2>
+                <p className="mt-2 text-sm app-muted">
+                  A quick view of which public trust pages and storefront signals were visibly detected.
+                </p>
+              </div>
+              <span className="app-chip text-xs font-semibold">Public evidence</span>
+            </div>
+            <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-3">
+              {trustSignals.map((signal) => (
+                <div
+                  key={signal.label}
+                  className={[
+                    "rounded-[20px] border px-4 py-4",
+                    signal.found ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50",
+                  ].join(" ")}
+                >
+                  <p className="text-sm font-semibold text-slate-900">{signal.label}</p>
+                  <p className={`mt-2 text-xs font-semibold ${signal.found ? "text-emerald-700" : "text-amber-700"}`}>
+                    {signal.found ? "Detected" : "Not clearly detected"}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        <div className="mt-7 app-panel rounded-[32px] p-6 sm:p-7">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg sm:text-xl font-bold text-red-200">
+            <h2 className="app-title text-lg font-semibold tracking-[-0.02em] sm:text-xl">
               {isFree ? "Top Public Findings" : "Critical Findings"}
             </h2>
-            <span className="text-xs text-red-300 border border-red-500/30 bg-red-500/10 rounded-full px-3 py-1 font-semibold">
+            <span className="rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600">
               {findings.length} items
             </span>
           </div>
           <div className="mt-4 space-y-4">
-            {findings.map((item) => (
-              <div key={item.item_id} className="rounded-2xl border border-red-500/25 bg-red-500/10">
-                <button type="button" onClick={() => setExpandedCriticalId((curr) => (curr === String(item.item_id) ? "" : String(item.item_id)))} className="w-full text-left px-4 py-4 flex items-start justify-between gap-4">
+            {findings.length === 0 ? (
+              <div className="rounded-[24px] border border-slate-200 bg-white p-5">
+                <p className="text-sm font-semibold text-slate-900">No confirmed public issues were flagged in this pass.</p>
+                <p className="mt-2 text-sm leading-7 text-slate-600">
+                  The public-facing basics look reasonably complete from the evidence collected here. The full scan is where we validate deeper account-level and cross-platform risks.
+                </p>
+              </div>
+            ) : findings.map((item) => (
+              <div key={item.item_id} className="rounded-[24px] border border-red-200 bg-red-50/70">
+                <button type="button" onClick={() => setExpandedCriticalId((curr) => (curr === String(item.item_id) ? "" : String(item.item_id)))} className="flex w-full items-start justify-between gap-4 px-4 py-4 text-left">
                   <div>
-                    <div className="text-sm font-semibold text-red-100">
+                    <div className="text-sm font-semibold text-red-700">
                       {item.title} <span className="opacity-70">• Rule {item.item_id}</span>
                     </div>
-                    <p className="mt-2 text-sm text-zinc-100/90">{item.problem}</p>
+                    <p className="mt-2 text-sm text-red-600/90">{item.problem}</p>
                   </div>
-                  <span className="text-zinc-200/80 font-bold">{expandedCriticalId === String(item.item_id) ? "—" : "+"}</span>
+                  <span className="font-bold text-red-500">{expandedCriticalId === String(item.item_id) ? "—" : "+"}</span>
                 </button>
                 {expandedCriticalId === String(item.item_id) ? (
-                  <div className="px-4 pb-4 pt-1 text-sm text-zinc-100/90">
-                    <p className="text-xs text-zinc-300 uppercase tracking-wide font-bold">Evidence</p>
+                  <div className="px-4 pb-4 pt-1 text-sm text-slate-700">
+                    <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Evidence</p>
                     <p className="mt-1">{item.evidence}</p>
-                    <p className="mt-3 text-xs text-zinc-300 uppercase tracking-wide font-bold">Fix</p>
+                    <p className="mt-3 text-xs font-bold uppercase tracking-wide text-slate-400">Fix</p>
                     <p className="mt-1">{item.fix}</p>
                   </div>
                 ) : null}
@@ -981,13 +1429,13 @@ function ReportPageClient() {
         </div>
 
         {quickWins.length > 0 ? (
-          <div className="mt-7 rounded-3xl border border-emerald-500/25 bg-emerald-500/[0.06] p-6 sm:p-7">
+          <div className="mt-7 app-panel rounded-[32px] p-6 sm:p-7">
             <div className="flex items-center justify-between gap-4">
               <div>
-                <h2 className="text-lg sm:text-xl font-bold text-emerald-100">
+                <h2 className="app-title text-lg font-semibold tracking-[-0.02em] sm:text-xl">
                   {isFree ? "Recommended Quick Wins" : "Priority Recommendations"}
                 </h2>
-                <p className="mt-2 text-sm text-zinc-300">
+                <p className="mt-2 text-sm app-muted">
                   {isFree
                     ? "These are the highest-leverage improvements based on public site signals."
                     : "Next steps to reduce risk and improve account readiness."}
@@ -996,11 +1444,11 @@ function ReportPageClient() {
             </div>
             <div className="mt-5 grid grid-cols-1 lg:grid-cols-2 gap-4">
               {quickWins.map((item) => (
-                <div key={`${item.item_id}-${item.title}`} className="rounded-2xl border border-white/10 bg-black/20 p-5">
-                  <p className="text-sm font-semibold text-emerald-100">{item.title}</p>
-                  <p className="mt-3 text-sm text-zinc-200/90">{item.why}</p>
-                  <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">Benefit</p>
-                  <p className="mt-1 text-sm text-zinc-300">{item.benefit}</p>
+                <div key={`${item.item_id}-${item.title}`} className="rounded-[24px] border border-slate-200 bg-white p-5">
+                  <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+                  <p className="mt-3 text-sm leading-7 text-slate-600">{item.why}</p>
+                  <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Benefit</p>
+                  <p className="mt-1 text-sm text-slate-600">{item.benefit}</p>
                 </div>
               ))}
             </div>
@@ -1009,24 +1457,24 @@ function ReportPageClient() {
 
         {isFree ? (
           <div className="mt-7 grid grid-cols-1 lg:grid-cols-2 gap-5">
-            <div className="relative rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:p-7 overflow-hidden">
+            <div className="relative app-panel rounded-[32px] overflow-hidden p-6 sm:p-7">
               <div className="blur-[2px] pointer-events-none select-none opacity-60">
-                <h2 className="text-lg sm:text-xl font-bold">Google Consistency Matrix</h2>
-                <p className="mt-2 text-sm text-zinc-300">Website vs GMC vs GMB vs Shopify mismatch analysis.</p>
+                <h2 className="app-title text-lg font-semibold sm:text-xl">Google Consistency Matrix</h2>
+                <p className="mt-2 text-sm app-muted">Website vs GMC vs public Google signals vs Shopify mismatch analysis.</p>
               </div>
-              <div className="absolute inset-0 flex items-center justify-center bg-zinc-950/60">
-                <span className="rounded-full border border-indigo-500/30 bg-indigo-500/15 px-4 py-2 text-sm font-semibold text-indigo-200">
+              <div className="absolute inset-0 flex items-center justify-center bg-white/75">
+                <span className="app-chip text-sm font-semibold">
                   Locked in free scan
                 </span>
               </div>
             </div>
-            <div className="relative rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:p-7 overflow-hidden">
+            <div className="relative app-panel rounded-[32px] overflow-hidden p-6 sm:p-7">
               <div className="blur-[2px] pointer-events-none select-none opacity-60">
-                <h2 className="text-lg sm:text-xl font-bold">77-Rule Compliance Breakdown</h2>
-                <p className="mt-2 text-sm text-zinc-300">Full pass/fail/warning mapping for every checklist rule.</p>
+                <h2 className="app-title text-lg font-semibold sm:text-xl">77-Rule Compliance Breakdown</h2>
+                <p className="mt-2 text-sm app-muted">Full pass/fail/warning mapping for every checklist rule.</p>
               </div>
-              <div className="absolute inset-0 flex items-center justify-center bg-zinc-950/60">
-                <span className="rounded-full border border-indigo-500/30 bg-indigo-500/15 px-4 py-2 text-sm font-semibold text-indigo-200">
+              <div className="absolute inset-0 flex items-center justify-center bg-white/75">
+                <span className="app-chip text-sm font-semibold">
                   Upgrade required
                 </span>
               </div>
@@ -1034,30 +1482,30 @@ function ReportPageClient() {
           </div>
         ) : (
           <>
-            <div className="mt-7 rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:p-7">
-              <h2 className="text-lg sm:text-xl font-bold">Consistency Issues</h2>
+            <div className="mt-7 app-panel rounded-[32px] p-6 sm:p-7">
+              <h2 className="app-title text-lg font-semibold tracking-[-0.02em] sm:text-xl">Consistency Issues</h2>
               <div className="mt-5 overflow-auto">
                 <table className="w-full min-w-[720px] border-separate border-spacing-0">
                   <thead>
                     <tr className="text-left">
-                      <th className="text-xs uppercase tracking-wide text-zinc-400 font-bold px-3 py-3">Field</th>
-                      <th className="text-xs uppercase tracking-wide text-zinc-400 font-bold px-3 py-3">Website</th>
-                      <th className="text-xs uppercase tracking-wide text-zinc-400 font-bold px-3 py-3">GMC</th>
-                      <th className="text-xs uppercase tracking-wide text-zinc-400 font-bold px-3 py-3">GMB</th>
-                      <th className="text-xs uppercase tracking-wide text-zinc-400 font-bold px-3 py-3">Shopify</th>
+                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Field</th>
+                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Website</th>
+                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">GMC</th>
+                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Public / OSINT</th>
+                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Shopify</th>
                     </tr>
                   </thead>
                   <tbody>
                     {data.analysis.consistency_issues.map((row, idx) => {
                       const cellClass =
                         row.status === "match"
-                          ? "bg-emerald-500/10 text-emerald-200"
+                          ? "bg-emerald-50 text-emerald-700"
                           : row.status === "mismatch"
-                          ? "bg-red-500/10 text-red-200"
-                          : "bg-white/5 text-zinc-300";
+                          ? "bg-red-50 text-red-700"
+                          : "bg-slate-50 text-slate-600";
                       return (
                         <tr key={`${row.field}-${idx}`}>
-                          <td className="px-3 py-2 text-sm font-semibold text-zinc-100/90 align-top">{row.field}</td>
+                          <td className="px-3 py-2 align-top text-sm font-semibold text-slate-900">{row.field}</td>
                           <td className={`px-3 py-2 text-sm rounded-lg ${cellClass}`}>{row.website}</td>
                           <td className={`px-3 py-2 text-sm rounded-lg ${cellClass}`}>{row.gmc}</td>
                           <td className={`px-3 py-2 text-sm rounded-lg ${cellClass}`}>{row.gmb}</td>
@@ -1070,22 +1518,162 @@ function ReportPageClient() {
               </div>
             </div>
 
-            <div className="mt-7 rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:p-7">
-              <h2 className="text-lg sm:text-xl font-bold">Checklist Results (All 77 Rules)</h2>
-              <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2">
-                {checklistEntries.slice(0, 77).map(([id, result]) => (
-                  <div key={id} className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
-                    <div className="text-xs text-zinc-400">Rule {id}</div>
-                    <div className="mt-1 text-sm font-semibold">{result}</div>
+            {(() => {
+              // Build flat rule-text lookup: { [id]: { text, sectionTitle } }
+              const ruleMap: Record<number, { text: string; sectionTitle: string }> = {};
+              for (const section of CHECKLIST) {
+                for (const item of section.items) {
+                  ruleMap[item.id] = { text: item.text, sectionTitle: section.title };
+                }
+              }
+              // Build critical_issues lookup by item_id
+              const issueMap: Record<number, typeof data.analysis.critical_issues[number]> = {};
+              for (const issue of data.analysis.critical_issues) {
+                if (issue.item_id) issueMap[issue.item_id] = issue;
+              }
+              // Separate entries
+              const failEntries = checklistEntries.filter(([, r]) => r === "fail" || r === "warning");
+              const passCount = checklistEntries.filter(([, r]) => r === "pass").length;
+              const unknownCount = checklistEntries.filter(([, r]) => r === "unknown").length;
+
+              if (failEntries.length === 0 && passCount === 0) return null;
+
+              return (
+                <div className="mt-7 app-panel rounded-[32px] p-6 sm:p-7">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div>
+                      <p className="app-section-label">Compliance Findings</p>
+                      <h2 className="mt-1 text-lg font-semibold tracking-[-0.02em] text-slate-900 sm:text-xl">
+                        {failEntries.length > 0
+                          ? `${failEntries.length} rule${failEntries.length !== 1 ? "s" : ""} need attention`
+                          : "All checked rules passed"}
+                      </h2>
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-xs">
+                      {failEntries.filter(([,r]) => r === "fail").length > 0 && (
+                        <span className="rounded-full bg-red-100 px-3 py-1 font-semibold text-red-700">
+                          {failEntries.filter(([,r]) => r === "fail").length} failed
+                        </span>
+                      )}
+                      {failEntries.filter(([,r]) => r === "warning").length > 0 && (
+                        <span className="rounded-full bg-amber-100 px-3 py-1 font-semibold text-amber-700">
+                          {failEntries.filter(([,r]) => r === "warning").length} warnings
+                        </span>
+                      )}
+                      {passCount > 0 && (
+                        <span className="rounded-full bg-emerald-100 px-3 py-1 font-semibold text-emerald-700">
+                          {passCount} passed
+                        </span>
+                      )}
+                      {unknownCount > 0 && (
+                        <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold text-slate-500">
+                          {unknownCount} unknown
+                        </span>
+                      )}
+                    </div>
                   </div>
-                ))}
+
+                  {failEntries.length > 0 ? (
+                    <div className="mt-5 flex flex-col gap-4">
+                      {failEntries.map(([idStr, result]) => {
+                        const id = Number(idStr);
+                        const rule = ruleMap[id];
+                        const issue = issueMap[id];
+                        const isFail = result === "fail";
+                        return (
+                          <div
+                            key={idStr}
+                            className={`rounded-[22px] border p-4 ${
+                              isFail
+                                ? "border-red-200 bg-red-50"
+                                : "border-amber-200 bg-amber-50"
+                            }`}
+                          >
+                            <div className="flex items-start gap-3">
+                              <span className={`mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-xs font-bold ${isFail ? "bg-red-200 text-red-700" : "bg-amber-200 text-amber-700"}`}>
+                                {isFail ? "✗" : "!"}
+                              </span>
+                              <div className="flex-1 min-w-0">
+                                <p className={`text-sm font-semibold ${isFail ? "text-red-800" : "text-amber-800"}`}>
+                                  {rule ? rule.text : `Rule ${id}`}
+                                </p>
+                                {rule && (
+                                  <p className="mt-0.5 text-xs text-slate-500">{rule.sectionTitle}</p>
+                                )}
+                                {issue && (
+                                  <>
+                                    <p className="mt-2 text-sm text-slate-700">{issue.problem}</p>
+                                    {issue.why_it_matters && (
+                                      <p className={`mt-2 rounded-[10px] px-3 py-2 text-xs font-medium ${isFail ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"}`}>
+                                        <span className="font-bold">Why this matters: </span>{issue.why_it_matters}
+                                      </p>
+                                    )}
+                                    <blockquote className="mt-2 rounded-[10px] border-l-4 border-slate-300 bg-white px-3 py-2 text-xs italic text-slate-600">
+                                      <span className="not-italic font-semibold text-slate-500 block mb-1">Evidence:</span>
+                                      {issue.evidence}
+                                    </blockquote>
+                                    <p className="mt-2 rounded-[10px] bg-white px-3 py-2 text-xs text-slate-700">
+                                      <span className="font-semibold">Fix: </span>{issue.fix}
+                                    </p>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="mt-4 text-sm text-emerald-700">All checked compliance rules passed for this scan.</p>
+                  )}
+                </div>
+              );
+            })()}
+
+            {data.analysis.suspension_reason && (
+              <div className="mt-7 app-panel rounded-[32px] p-6 sm:p-7 border border-red-200 bg-red-50">
+                <p className="app-section-label text-red-600">Primary Suspension Diagnosis</p>
+                <h2 className="mt-1 text-lg font-semibold tracking-[-0.02em] text-red-900 sm:text-xl">
+                  Most Likely Cause of Suspension
+                </h2>
+                <p className="mt-3 text-sm leading-7 text-red-800">
+                  {data.analysis.suspension_reason}
+                </p>
               </div>
-            </div>
+            )}
+
+            {data.analysis.appeal_tip ? (
+              <div className="mt-7 app-panel rounded-[32px] p-6 sm:p-7">
+                <p className="app-section-label">Next Steps</p>
+                <h2 className="mt-1 text-lg font-semibold tracking-[-0.02em] text-slate-900 sm:text-xl">
+                  Your Appeal Strategy
+                </h2>
+                <p className="mt-2 text-sm app-muted">
+                  A tailored, step-by-step strategy for submitting your appeal or compliance review to Google — based on the evidence found in this scan.
+                </p>
+                <div className="mt-5 rounded-[22px] border border-blue-200 bg-blue-50 px-5 py-4 text-sm leading-7 text-blue-900 whitespace-pre-line">
+                  {data.analysis.appeal_tip}
+                </div>
+              </div>
+            ) : null}
           </>
         )}
 
-        <div className="mt-7 rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:p-7">
-          <h2 className="text-lg sm:text-xl font-bold">PageSpeed</h2>
+        <div className="mt-7 app-frame rounded-[32px] p-6 sm:p-7">
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="app-title text-lg font-semibold tracking-[-0.02em] sm:text-xl">PageSpeed</h2>
+            <span
+              className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+                pagespeedUnavailable
+                  ? "border-amber-200 bg-amber-50 text-amber-700"
+                  : pagespeedCached
+                  ? "border-blue-200 bg-blue-50 text-blue-700"
+                  : "border-emerald-200 bg-emerald-50 text-emerald-700"
+              }`}
+            >
+              {pagespeedSnapshotLabel}
+            </span>
+          </div>
           <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {pagespeedCards.map((m) => {
               const color = metricColor(m.label, m.rawValue);
@@ -1093,22 +1681,33 @@ function ReportPageClient() {
               return (
                 <div key={m.label} className={["rounded-2xl border px-4 py-4", cls.border, cls.bg, "ring-1", cls.ring].join(" ")}>
                   <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-semibold text-zinc-100/90">{m.label}</p>
+                    <p className="text-sm font-semibold text-slate-900">{m.label}</p>
                     <span className={`h-2 w-2 rounded-full ${cls.dot}`} />
                   </div>
-                  <p className="mt-3 text-3xl font-extrabold text-zinc-100">{m.valueLabel}</p>
+                  <p className="mt-3 text-3xl font-semibold text-slate-900">{m.valueLabel}</p>
                   {m.hint ? <p className={`mt-2 text-xs ${cls.text} leading-relaxed`}>{m.hint}</p> : null}
                 </div>
               );
             })}
           </div>
+          {pagespeedRefreshState === "refreshing" ? (
+            <p className="mt-4 text-sm text-blue-700">Loading PageSpeed data...</p>
+          ) : pagespeedUnavailable ? (
+            <p className="mt-4 text-sm text-amber-700">
+              PageSpeed data could not be collected for this site. Performance metrics are not available.
+            </p>
+          ) : pagespeedCached ? (
+            <p className="mt-4 text-sm text-blue-700">
+              Showing a recent cached PageSpeed snapshot.
+            </p>
+          ) : null}
           {data.pagespeed.opportunities && data.pagespeed.opportunities.length > 0 && data.pagespeed.opportunities[0] !== "No major optimization opportunities detected." ? (
             <div className="mt-5">
-              <p className="text-xs text-zinc-400 uppercase tracking-wide font-bold">Top Optimization Opportunities</p>
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Top Optimization Opportunities</p>
               <ul className="mt-2 space-y-1.5">
                 {data.pagespeed.opportunities.map((opp, i) => (
-                  <li key={i} className="flex items-start gap-2 text-sm text-zinc-200/90">
-                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-yellow-400 shrink-0" />
+                  <li key={i} className="flex items-start gap-2 text-sm text-slate-600">
+                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" />
                     {opp}
                   </li>
                 ))}

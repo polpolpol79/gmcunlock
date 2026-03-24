@@ -15,7 +15,7 @@ export type ScanPhaseKey = (typeof SCAN_PHASES)[keyof typeof SCAN_PHASES];
 
 export const SCAN_PHASE_LABELS: Record<ScanPhaseKey, string> = {
   queued: "Starting scan",
-  pagespeed_crawl: "PageSpeed & website crawl",
+  pagespeed_crawl: "Website crawl",
   google_shopify: "Google & Shopify data",
   analysis: "AI compliance review",
   persist: "Saving report",
@@ -26,7 +26,7 @@ export const SCAN_PHASE_LABELS: Record<ScanPhaseKey, string> = {
 export function phaseDetailFor(key: ScanPhaseKey, extra?: string): string {
   const base: Record<ScanPhaseKey, string> = {
     queued: "Preparing your scan…",
-    pagespeed_crawl: "Fetching PageSpeed metrics and crawling your live site.",
+    pagespeed_crawl: "Crawling your live site and collecting public storefront evidence.",
     google_shopify: "Loading connected Google and Shopify signals (if configured).",
     analysis: "Analyzing policies, trust signals, and GMC-style risks with Claude.",
     persist: "Writing results so you can share and revisit this report.",

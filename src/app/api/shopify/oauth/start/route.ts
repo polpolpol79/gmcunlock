@@ -30,17 +30,21 @@ export async function GET(req: Request) {
     }
 
     const returnTo = safeReturnTo(url.searchParams.get("return_to"));
-    const state = createShopifyOAuthState();
+    // Embed returnTo in state so it survives the full OAuth round-trip
+    const state = createShopifyOAuthState(returnTo);
+    const nonce = state.split("|")[0];
     const redirectUri = getShopifyRedirectUri();
     const oauthUrl = buildShopifyOAuthUrl({ shop, state, redirectUri });
     const res = NextResponse.redirect(oauthUrl);
-    res.cookies.set(SHOPIFY_OAUTH_STATE_COOKIE, state, {
+    // Store only the nonce for CSRF validation
+    res.cookies.set(SHOPIFY_OAUTH_STATE_COOKIE, nonce, {
       httpOnly: true,
       sameSite: "lax",
       secure: redirectUri.startsWith("https://"),
       path: "/",
       maxAge: 60 * 10,
     });
+    // Keep return_to cookie as fallback
     res.cookies.set(SHOPIFY_OAUTH_RETURN_TO_COOKIE, encodeURIComponent(returnTo), {
       httpOnly: true,
       sameSite: "lax",

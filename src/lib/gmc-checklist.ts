@@ -19,7 +19,7 @@ export type ProfileType = "all" | "ecommerce" | "service_provider" | "leads_only
 
 export type DataSource = "crawl" | "gmc" | "gads" | "shopify" | "gmb" | "pagespeed";
 
-export type BusinessType = "ecommerce_shopify" | "ecommerce_other" | "service_provider" | "leads_only";
+export type BusinessType = "ecommerce_shopify" | "ecommerce_other" | "service_provider" | "leads_only" | "other";
 
 export type Platform = "shopify" | "woocommerce" | "wix" | "other";
 
@@ -72,9 +72,11 @@ export const CHECKLIST: ChecklistSection[] = [
       { id: 10, priority: "urgent", text: "כתובת פיזית ברורה באתר",                             applies_to: ["all"],                                   source: "crawl"      },
       { id: 11, priority: "urgent", text: "מספר טלפון אמיתי ופעיל",                             applies_to: ["all"],                                   source: "crawl"      },
       { id: 12, priority: "urgent", text: "פוטר כולל אימייל + טלפון + כתובת",                  applies_to: ["all"],                                   source: "crawl"      },
-      { id: 13, priority: "urgent", text: "פרטי קשר זהים באתר, GMC, Ads ו-GMB",                applies_to: ["all"],                                   source: "crawl"      },
+      { id: 13, priority: "urgent", text: "פרטי קשר זהים באתר, GMC, Ads ובמה שמופיע בגוגל (OSINT)", applies_to: ["all"],                                   source: "crawl"      },
       { id: 14, priority: "rec",    text: "טופס יצירת קשר",                                     applies_to: ["all"],                                   source: "crawl"      },
       { id: 15, priority: "rec",    text: "שעות פעילות וזמן מענה",                              applies_to: ["all"],                                   source: "crawl"      },
+      { id: 80, priority: "urgent", text: "הצגת הכשרה/רישיון מקצועי (עו\"ד, רופא וכו')",       applies_to: ["service_provider"],                      source: "crawl"      },
+      { id: 81, priority: "urgent", text: "פרטי משרד/עסק ברורים — שם, כתובת, טלפון",            applies_to: ["service_provider"],                      source: "crawl"      },
     ]
   },
   {
@@ -86,6 +88,8 @@ export const CHECKLIST: ChecklistSection[] = [
       { id: 18, priority: "urgent", text: "Returns & Refunds מפורט",                            applies_to: ["ecommerce"],                             source: "crawl"      },
       { id: 19, priority: "urgent", text: "Shipping Policy מפורט",                              applies_to: ["ecommerce"],                             source: "crawl"      },
       { id: 20, priority: "rec",    text: "לינקים למדיניות מדפי מוצר",                          applies_to: ["ecommerce"],                             source: "crawl"      },
+      { id: 78, priority: "rec",    text: "דף הסבר על השירות או התהליך",                        applies_to: ["service_provider"],                      source: "crawl"      },
+      { id: 79, priority: "rec",    text: "דף FAQ / שאלות נפוצות",                              applies_to: ["service_provider", "leads_only"],        source: "crawl"      },
     ]
   },
   {
@@ -117,6 +121,10 @@ export const CHECKLIST: ChecklistSection[] = [
       { id: 37, priority: "rec",    text: "ללא תמונות כפולות",                                  applies_to: ["ecommerce"],                             source: "crawl"      },
       { id: 38, priority: "rec",    text: "Features & Benefits ברורים",                         applies_to: ["ecommerce"],                             source: "crawl"      },
       { id: 39, priority: "rec",    text: "מיקס טקסט + תמונות",                                 applies_to: ["all"],                                   source: "crawl"      },
+      { id: 82, priority: "urgent", text: "דף נחיתה ברור עם CTA ומסר אחד",                     applies_to: ["leads_only"],                            source: "crawl"      },
+      { id: 83, priority: "rec",    text: "הוכחה חברתית — עדויות, לוגואים, מספרים",             applies_to: ["leads_only", "service_provider"],        source: "crawl"      },
+      { id: 84, priority: "rec",    text: "הסבר ברור על מה מקבלים תמורת הכסף/הפנייה",          applies_to: ["leads_only"],                            source: "crawl"      },
+      { id: 85, priority: "urgent", text: "אין הבטחות מופרזות או הטעיה",                       applies_to: ["leads_only"],                            source: "crawl"      },
     ]
   },
   {
@@ -196,9 +204,14 @@ export const recItems = allItems.filter(i => i.priority === "rec");
 
 /** מחזיר רק את הסעיפים הרלוונטיים לפרופיל המשתמש */
 export function getRelevantItems(profile: UserProfile): ChecklistItem[] {
-  const type = profile.business_type.startsWith("ecommerce") ? "ecommerce" : profile.business_type;
+  const bt = profile.business_type;
+  const type: ProfileType = bt.startsWith("ecommerce")
+    ? "ecommerce"
+    : bt === "service_provider" || bt === "leads_only"
+      ? bt
+      : "all";
   return allItems.filter(item =>
-    item.applies_to.includes("all") || item.applies_to.includes(type as ProfileType)
+    item.applies_to.includes("all") || item.applies_to.includes(type)
   );
 }
 
@@ -229,13 +242,17 @@ export function inferAvailableDataSources(
   const nonEmpty = (s?: string) =>
     Boolean(s && s.trim().length > 3 && s.trim() !== "{}" && s.trim() !== "null");
 
+  const gmbJson = extras.gmbJson ?? "";
+  const gmbApiConnected =
+    nonEmpty(gmbJson) && !gmbJson.includes('"public_presence_only":true');
+
   return {
     crawl: crawlOk,
     pagespeed: psOk,
     gmc: nonEmpty(extras.gmcJson),
     gads: nonEmpty(extras.adsJson),
     shopify: nonEmpty(extras.shopifyJson),
-    gmb: nonEmpty(extras.gmbJson),
+    gmb: gmbApiConnected,
   };
 }
 
@@ -292,7 +309,7 @@ export function mapScanProfileToUserProfile(input: UserProfileInput): UserProfil
   } else if (bt === "leads_only") {
     business_type = "leads_only";
   } else {
-    business_type = "ecommerce_other";
+    business_type = "other";
   }
 
   let blocked_where: BlockedWhere;
@@ -349,7 +366,15 @@ function connectedPayloadBlock(title: string, raw: string): string {
 }
 
 function formatPageSpeedLine(ps: PageSpeedData): string {
-  return `Performance: ${ps.performance} | LCP: ${ps.lcp} | CLS: ${ps.cls} | FID: ${ps.fid} | FCP: ${ps.fcp} | TTFB: ${ps.ttfb}`;
+  const snapshotLabel =
+    ps.source === "cached"
+      ? "Cached snapshot"
+      : ps.source === "unavailable"
+      ? "Unavailable snapshot"
+      : "Live snapshot";
+  const strategyLabel = ps.strategy && ps.strategy !== "unknown" ? ` | Strategy: ${ps.strategy}` : "";
+  const noteLabel = ps.note ? ` | Note: ${ps.note}` : "";
+  return `Snapshot: ${snapshotLabel}${strategyLabel} | Performance: ${ps.performance} | LCP: ${ps.lcp} | CLS: ${ps.cls} | FID: ${ps.fid} | FCP: ${ps.fcp} | TTFB: ${ps.ttfb}${noteLabel}`;
 }
 
 function languageLabel(code: string | null): string {
@@ -456,6 +481,7 @@ export function buildAnalysisPrompt(
     ecommerce_other: "E-commerce (non-Shopify)",
     service_provider: "Service provider",
     leads_only: "Leads / ads only",
+    other: "Other / general",
   };
 
   const blockedLabel: Record<BlockedWhere, string> = {
@@ -486,12 +512,20 @@ export function buildAnalysisPrompt(
       ? websiteScan.robotsTxt.trim()
       : "not found";
 
+  const businessContext: Record<BusinessType, string> = {
+    ecommerce_shopify: "This is an e-commerce store on Shopify. Focus on product quality, checkout trust, shipping/returns policies, and store legitimacy.",
+    ecommerce_other: "This is an e-commerce store. Focus on product quality, checkout trust, shipping/returns policies, and store legitimacy.",
+    service_provider: "This is a service provider website (law firm, consultant, agency, etc.). Do NOT check ecommerce rules like shipping/returns. Focus on professional credibility, contact details, service clarity, qualifications, and trust signals.",
+    leads_only: "This is a landing page or lead generation site. Do NOT check ecommerce rules like shipping/returns/checkout. Focus on clarity of offer, CTA quality, trust signals, social proof, and avoiding misleading claims.",
+    other: "This is a general website. Focus on overall trust, contact information, transparency, and basic compliance.",
+  };
+
   const systemRole = isFreeMode
     ? "You are a website quality, trust, and public-intelligence analyst."
-    : "You are a Google Merchant Center and Google Ads compliance expert.";
+    : "You are a senior Google Merchant Center compliance consultant with 10+ years of experience recovering suspended merchant accounts. You write reports for business owners who need to understand exactly what went wrong and how to fix it to get their ads and shopping listings reinstated.";
   const mission = isFreeMode
-    ? "You MUST analyze the public data below and return evidence-backed findings and practical recommendations only."
-    : "You MUST check every applicable rule against the ACTUAL DATA below.";
+    ? `You MUST analyze the public data below and return evidence-backed findings and practical recommendations only.\n\nBUSINESS CONTEXT: ${businessContext[userProfile.business_type]}`
+    : `You MUST perform a comprehensive compliance audit against the ACTUAL DATA below. The business owner is ${userProfile.blocked_where === "not_blocked" ? "proactively checking for compliance risks" : "dealing with a Google suspension or policy violation"} and needs a professional, evidence-backed diagnosis they can act on immediately.\n\nBUSINESS CONTEXT: ${businessContext[userProfile.business_type]}`;
   const instructionBlock = isFreeMode
     ? `CLAUDE INSTRUCTIONS:
 - Focus on public-site quality, clarity, trust, and readiness improvements.
@@ -503,13 +537,16 @@ export function buildAnalysisPrompt(
 - Point to the EXACT page URL or section where it was found.
 - Never say "likely", "probably", or speculate.
 - checklist_results may ONLY include the rule IDs listed under "PUBLIC WEBSITE IMPROVEMENTS TO CHECK" below.`
-    : `CLAUDE INSTRUCTIONS:
-- For each issue found: quote the EXACT text or value from the data that proves the problem.
-- Point to the EXACT page URL or section where it was found.
+    : `CLAUDE INSTRUCTIONS — PAID COMPLIANCE AUDIT:
+- You are writing for a business owner, NOT a technical developer. Use clear language they can understand.
+- For EVERY critical issue found: explain WHY this specific problem triggers a Google suspension or policy violation — not just that it violates a rule.
+- Quote the EXACT text, value, or absence of data that proves the problem. Include the page URL.
 - Never say "likely", "probably", or speculate — only report confirmed issues with quoted evidence.
-- If data is missing for a rule → checklist_results must be "unknown" for that rule, not "fail".
-- Evaluate ONLY checklist rule IDs listed under "COMPLIANCE RULES TO CHECK" below. Do not add other IDs to checklist_results.
-- Compare business identity fields across all connected sources when data is present (website text, GMC, Ads, GMB, Shopify).`;
+- If data is missing for a rule → checklist_results must be "unknown", not "fail".
+- Evaluate ONLY checklist rule IDs listed under "COMPLIANCE RULES TO CHECK" below.
+- When multiple data sources are connected (website, GMC, Ads, Shopify) plus OSINT/public search signals: actively compare them and flag any mismatches in business name, address, phone, email, or product data. We do NOT use the Google Business Profile Management API; for Maps/Search visibility use the OSINT section and the website crawl only.
+- For appeal_tip: write a DETAILED, structured appeal strategy — not a single sentence. Include: (1) what the business owner should fix BEFORE submitting the appeal, (2) what to write in the appeal explanation, (3) what evidence/screenshots to attach, (4) what tone to use. Make it ready to copy-paste.
+- risk_score: 0=perfect compliance, 100=almost certain suspension. Be accurate.`;
   const rulesSection = isFreeMode
     ? `═══ PUBLIC WEBSITE IMPROVEMENTS TO CHECK ═══
 ${recList || "(none in applicable set)"}`
@@ -536,7 +573,7 @@ User-declared profile:
 - Business type: ${profileLabel[userProfile.business_type]}
 - Platform: ${userProfile.platform}
 - Block / appeal context: ${blockedLabel[userProfile.blocked_where]}
-- Google Business Profile: ${userProfile.has_gmb ? "declared yes" : "declared no / unknown"}
+- User says they have a Google Business Profile (Maps): ${userProfile.has_gmb ? "declared yes" : "declared no / unknown"} (public presence is verified via OSINT + crawl, not GMB API)
 
 Original input URL: ${websiteUrl}
 
@@ -566,32 +603,33 @@ ${connectedPayloadBlock("═══ GOOGLE ADS ═══", adsData)}
 
 ${connectedPayloadBlock("═══ SHOPIFY DATA ═══", shopData)}
 
-${connectedPayloadBlock("═══ GOOGLE BUSINESS PROFILE ═══", gmbData)}
+${connectedPayloadBlock("═══ PUBLIC GOOGLE PRESENCE (NO GMB API — use OSINT block below) ═══", gmbData)}
 
 ═══ OSINT / PUBLIC REPUTATION ═══
 ${options?.osintBlock?.trim() || "No OSINT data collected (API keys not configured or data unavailable)"}
 
 ═══ CONSISTENCY CHECK ═══
-When multiple sources are connected, compare: business/brand name, physical address, phone, support email, hours (if present). List mismatches with exact values from each source.
+When multiple sources are connected, compare: business/brand name, physical address, phone, support email, hours (if present). For how the business appears on Google Search/Maps, use OSINT + crawl — there is no authenticated GMB API payload. List mismatches with exact values from each source.
 
 ${rulesSection}
 ${extraNotes}
 
-Return JSON only — no markdown fences, no commentary. Use this shape:
+Return JSON only — no markdown fences, no commentary. Use this exact shape:
 {
   "risk_score": <0-100>,
   "risk_level": "CRITICAL|HIGH|MEDIUM|LOW",
-  "headline": "<one sentence>",
+  "headline": "<one sentence summarizing the most critical finding>",
   "profile_detected": "<profile type you infer from data>",
+  "suspension_reason": "<if risk is HIGH or CRITICAL: your best diagnosis of the PRIMARY reason Google would suspend or has suspended this account, based on the data — be specific, not generic>",
   "consistency_issues": [
     {
       "field": "<field name>",
-      "site_value": "<value from website/crawl>",
-      "gmc_value": "<value from GMC or N/A>",
-      "gmb_value": "<value from GMB or N/A>",
-      "shopify_value": "<value from Shopify or N/A>",
-      "ads_value": "<value from Google Ads or N/A>",
-      "issue": "<description>"
+      "site_value": "<exact value from website/crawl>",
+      "gmc_value": "<exact value from GMC or N/A>",
+      "gmb_value": "<exact value from public OSINT/search snippets or N/A — not from GMB Management API>",
+      "shopify_value": "<exact value from Shopify or N/A>",
+      "ads_value": "<exact value from Google Ads or N/A>",
+      "issue": "<precise description of the mismatch and why it matters>"
     }
   ],
   "critical_issues": [
@@ -599,9 +637,10 @@ Return JSON only — no markdown fences, no commentary. Use this shape:
       "item_id": <checklist rule number>,
       "section": "<category>",
       "title": "<short title>",
-      "problem": "<precise problem>",
-      "evidence": "<exact quote from the data above + page URL>",
-      "fix": "<specific fix>",
+      "problem": "<precise problem description — explain in plain language what is wrong>",
+      "why_it_matters": "<explain specifically why THIS issue can trigger a Google suspension or policy flag>",
+      "evidence": "<EXACT quote, value, or observation from the scan data — include page URL. If absent: state exactly what was missing and where it should be>",
+      "fix": "<specific, actionable fix steps — be concrete, not generic>",
       "effort": "quick|medium|hard"
     }
   ],
@@ -609,23 +648,23 @@ Return JSON only — no markdown fences, no commentary. Use this shape:
     {
       "order": <1-10>,
       "title": "<title>",
-      "action": "<steps>",
-      "time_estimate": "<estimate>"
+      "action": "<concrete action steps>",
+      "time_estimate": "<realistic time estimate>"
     }
   ],
   "recommendations": [
     {
       "item_id": <rule number>,
       "title": "<title>",
-      "why": "<why it matters>",
-      "benefit": "<benefit>"
+      "why": "<why it matters for compliance or trust>",
+      "benefit": "<specific benefit>"
     }
   ],
   "checklist_results": {
     "<item_id>": "pass|fail|warning|unknown"
   },
-  "appeal_tip": "<tip>",
-  "resolution_time": "<estimated time to resolve>"
+  "appeal_tip": "<DETAILED appeal strategy — write 4-6 sentences minimum. Structure: (1) What to fix BEFORE submitting (specific items). (2) What to write in the appeal text (tone, key points to mention, what to admit vs. what to dispute). (3) What evidence/screenshots to attach. (4) Timeline expectations. This should be ready for the business owner to act on immediately.>",
+  "resolution_time": "<realistic estimate for full resolution if all fixes are applied>"
 }
 `.trim();
 }
