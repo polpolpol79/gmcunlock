@@ -14,13 +14,13 @@ const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const DEFAULT_GOOGLE_REDIRECT_URI = "http://localhost:3000/api/google/oauth/callback";
 
-/** GMC + Ads only — no business.manage (GMB Management API). Public Maps/Search context comes from OSINT + crawl. */
+/** Read-only access to GMC + Ads. No write/delete permissions requested. */
 const SCOPES = [
   "openid",
   "email",
   "profile",
-  "https://www.googleapis.com/auth/content",
-  "https://www.googleapis.com/auth/adwords",
+  "https://www.googleapis.com/auth/content.readonly",
+  "https://www.googleapis.com/auth/adwords.readonly",
 ];
 
 export type GoogleOAuthTokens = {
