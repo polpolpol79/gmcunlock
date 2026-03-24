@@ -471,6 +471,7 @@ export async function runFreeScanPipeline(
       response = await client.messages.create({
         model: preferredModel,
         max_tokens: 1500,
+        temperature: 0,
         messages: [{ role: "user", content: prompt }],
       });
     } catch (modelErr) {
@@ -478,6 +479,7 @@ export async function runFreeScanPipeline(
       response = await client.messages.create({
         model: FALLBACK_CLAUDE_MODEL,
         max_tokens: 1500,
+        temperature: 0,
         messages: [{ role: "user", content: prompt }],
       });
     }

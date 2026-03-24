@@ -1488,41 +1488,61 @@ function ReportPageClient() {
           </div>
         ) : (
           <>
-            <div className="mt-7 app-panel rounded-[32px] p-6 sm:p-7">
-              <h2 className="app-title text-lg font-semibold tracking-[-0.02em] sm:text-xl">Consistency Issues</h2>
-              <div className="mt-5 overflow-auto">
-                <table className="w-full min-w-[720px] border-separate border-spacing-0">
-                  <thead>
-                    <tr className="text-left">
-                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Field</th>
-                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Website</th>
-                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">GMC</th>
-                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Public / OSINT</th>
-                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Shopify</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.analysis.consistency_issues.map((row, idx) => {
-                      const cellClass =
-                        row.status === "match"
-                          ? "bg-emerald-50 text-emerald-700"
-                          : row.status === "mismatch"
-                          ? "bg-red-50 text-red-700"
-                          : "bg-slate-50 text-slate-600";
-                      return (
-                        <tr key={`${row.field}-${idx}`}>
-                          <td className="px-3 py-2 align-top text-sm font-semibold text-slate-900">{row.field}</td>
-                          <td className={`px-3 py-2 text-sm rounded-lg ${cellClass}`}>{row.website}</td>
-                          <td className={`px-3 py-2 text-sm rounded-lg ${cellClass}`}>{row.gmc}</td>
-                          <td className={`px-3 py-2 text-sm rounded-lg ${cellClass}`}>{row.gmb}</td>
-                          <td className={`px-3 py-2 text-sm rounded-lg ${cellClass}`}>{row.shopify}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            {(() => {
+              const ci = data.analysis.consistency_issues;
+              const isNa = (v: string) => !v || v === "N/A" || /^N\/A/i.test(v);
+              const allNa = ci.length === 0 || ci.every(
+                (r) => isNa(r.gmc) && isNa(r.gmb) && isNa(r.shopify) && r.status === "unknown"
+              );
+              const renderCell = (val: string) => {
+                if (isNa(val)) return <span className="text-slate-400 italic text-xs">Not connected</span>;
+                return val;
+              };
+
+              return (
+                <div className="mt-7 app-panel rounded-[32px] p-6 sm:p-7">
+                  <h2 className="app-title text-lg font-semibold tracking-[-0.02em] sm:text-xl">Consistency Issues</h2>
+                  {allNa ? (
+                    <p className="mt-4 text-sm text-slate-500">
+                      No cross-source comparison available. Connect Google Merchant Center or Shopify to compare business details across platforms and detect mismatches.
+                    </p>
+                  ) : (
+                    <div className="mt-5 overflow-auto">
+                      <table className="w-full min-w-[720px] border-separate border-spacing-0">
+                        <thead>
+                          <tr className="text-left">
+                            <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Field</th>
+                            <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Website</th>
+                            <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">GMC</th>
+                            <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Public / OSINT</th>
+                            <th className="px-3 py-3 text-xs font-bold uppercase tracking-wide text-slate-400">Shopify</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ci.map((row, idx) => {
+                            const cellClass =
+                              row.status === "match"
+                                ? "bg-emerald-50 text-emerald-700"
+                                : row.status === "mismatch"
+                                ? "bg-red-50 text-red-700"
+                                : "bg-slate-50 text-slate-600";
+                            return (
+                              <tr key={`${row.field}-${idx}`}>
+                                <td className="px-3 py-2 align-top text-sm font-semibold text-slate-900">{row.field}</td>
+                                <td className={`px-3 py-2 text-sm rounded-lg ${cellClass}`}>{renderCell(row.website)}</td>
+                                <td className={`px-3 py-2 text-sm rounded-lg ${cellClass}`}>{renderCell(row.gmc)}</td>
+                                <td className={`px-3 py-2 text-sm rounded-lg ${cellClass}`}>{renderCell(row.gmb)}</td>
+                                <td className={`px-3 py-2 text-sm rounded-lg ${cellClass}`}>{renderCell(row.shopify)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {(() => {
               // Build flat rule-text lookup: { [id]: { text, sectionTitle } }
@@ -1572,7 +1592,7 @@ function ReportPageClient() {
                         </span>
                       )}
                       {unknownCount > 0 && (
-                        <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold text-slate-500">
+                        <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold text-slate-500" title="Rules that could not be verified — insufficient data or disconnected source">
                           {unknownCount} unknown
                         </span>
                       )}

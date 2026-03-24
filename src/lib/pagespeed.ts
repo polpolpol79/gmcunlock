@@ -238,43 +238,14 @@ export async function getPageSpeedData(
 
   const requestPromise = (async () => {
     let lastError: Error | null = null;
-    const attempts: Array<{ strategy: "mobile" | "desktop"; timeoutMs: number }> =
-      mode === "background"
-        ? [
-            { strategy: "mobile", timeoutMs: 35000 },
-            { strategy: "desktop", timeoutMs: 25000 },
-          ]
-        : [
-            { strategy: "mobile", timeoutMs: 25000 },
-            { strategy: "desktop", timeoutMs: 20000 },
-          ];
-
-    const controllers = attempts.map(() => new AbortController());
-    const requests = attempts.map((attempt, index) =>
-      requestPageSpeed(
-        targetUrl,
-        apiKey,
-        attempt.strategy,
-        attempt.timeoutMs,
-        controllers[index].signal
-      )
-    );
+    const timeoutMs = mode === "background" ? 35000 : 25000;
 
     try {
-      const data = await Promise.any(requests);
-      controllers.forEach((controller) => controller.abort());
+      const data = await requestPageSpeed(targetUrl, apiKey, "mobile", timeoutMs);
       setCachedPageSpeed(targetUrl, data);
       return data;
     } catch (error) {
-      controllers.forEach((controller) => controller.abort());
-      if (error instanceof AggregateError && Array.isArray(error.errors)) {
-        const messages = error.errors.map((item) =>
-          item instanceof Error ? item.message : String(item)
-        );
-        lastError = new Error(messages.join(" | "));
-      } else {
-        lastError = error instanceof Error ? error : new Error("PageSpeed request failed");
-      }
+      lastError = error instanceof Error ? error : new Error("PageSpeed request failed");
     }
 
     const staleCached = getAnyCachedPageSpeed(targetUrl);

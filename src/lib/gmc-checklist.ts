@@ -596,8 +596,10 @@ ${businessIdentityBlock}
 
 ═══ BUSINESS IDENTITY (quick fields from crawl) ═══
 Name: ${fp.businessName ?? "[none]"}
-Email: ${fp.email ?? "[none]"}
-Phone: ${fp.phone ?? "[none]"}
+Primary email: ${fp.email ?? "[none]"}
+All emails found: ${(fp.emails?.length ? fp.emails.join(", ") : fp.email) || "[none]"}
+Primary phone: ${fp.phone ?? "[none]"}
+All phones found: ${(fp.phones?.length ? fp.phones.join(", ") : fp.phone) || "[none]"}
 Address: ${fp.address ?? "[none]"}
 Currency: ${fp.currency ?? "[none]"}
 HTML lang: ${fp.language ?? "[none]"}

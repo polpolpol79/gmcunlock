@@ -26,6 +26,8 @@ export type SiteFingerprint = {
   businessName: string | null;
   email: string | null;
   phone: string | null;
+  emails: string[];
+  phones: string[];
   address: string | null;
   currency: string | null;
   language: string | null;
@@ -46,6 +48,8 @@ export type WebsiteScanData = {
     businessName: string | null;
     email: string | null;
     phone: string | null;
+    emails: string[];
+    phones: string[];
     address: string | null;
     currency: string | null;
     language: string | null;
@@ -189,17 +193,28 @@ function pickKeywordUrls(
   return picked;
 }
 
-function pickProductUrl(anchors: { href: string; text: string }[]): string | null {
+const MAX_PRODUCT_PAGES = 4;
+
+function pickProductUrls(anchors: { href: string; text: string }[]): string[] {
+  const picked: string[] = [];
   for (const { href } of anchors) {
+    if (picked.length >= MAX_PRODUCT_PAGES) break;
     if (
       /\/products?\//i.test(href) ||
-      /\/collections\/[^/]+\/products\//i.test(href) ||
-      /\/collections\/[^/?#]+/i.test(href)
+      /\/collections\/[^/]+\/products\//i.test(href)
     ) {
-      return href;
+      if (!picked.includes(href)) picked.push(href);
     }
   }
-  return null;
+  if (picked.length < MAX_PRODUCT_PAGES) {
+    for (const { href } of anchors) {
+      if (picked.length >= MAX_PRODUCT_PAGES) break;
+      if (/\/collections\/[^/?#]+/i.test(href)) {
+        if (!picked.includes(href)) picked.push(href);
+      }
+    }
+  }
+  return picked;
 }
 
 function parseSitemapUrls(xml: string, origin: string, max = 200): string[] {
@@ -409,6 +424,8 @@ export function emptySiteFingerprint(): SiteFingerprint {
     businessName: null,
     email: null,
     phone: null,
+    emails: [],
+    phones: [],
     address: null,
     currency: null,
     language: null,
@@ -432,6 +449,8 @@ export function emptyWebsiteScan(url: string): WebsiteScanData {
       businessName: null,
       email: null,
       phone: null,
+      emails: [],
+      phones: [],
       address: null,
       currency: null,
       language: null,
@@ -502,14 +521,17 @@ export async function crawlWebsite(url: string): Promise<WebsiteScanData> {
   const fromSitemap = sitemapUrls.filter((u) => KEYWORD_RE.test(u)).slice(0, MAX_KEYWORD_PAGES);
   const keywordUrls = uniqueUrls([...keywordCandidates, ...fromSitemap]).slice(0, MAX_KEYWORD_PAGES);
 
-  let productUrl = pickProductUrl(anchors);
-  if (!productUrl && sitemapUrls.length > 0) {
-    productUrl = sitemapUrls.find((u) => /\/products?\//i.test(u) || /\/collections\/[^/?#]+/i.test(u)) ?? null;
+  let productUrls = pickProductUrls(anchors);
+  if (productUrls.length < MAX_PRODUCT_PAGES && sitemapUrls.length > 0) {
+    const fromSitemapProducts = sitemapUrls
+      .filter((u) => /\/products?\//i.test(u) && !productUrls.includes(u))
+      .slice(0, MAX_PRODUCT_PAGES - productUrls.length);
+    productUrls = [...productUrls, ...fromSitemapProducts];
   }
 
   const extraUrls = uniqueUrls([
     ...keywordUrls,
-    ...(productUrl ? [productUrl] : []),
+    ...productUrls,
   ]);
 
   const pageFetches = await Promise.allSettled(
@@ -559,8 +581,8 @@ export async function crawlWebsite(url: string): Promise<WebsiteScanData> {
   const lang = $home?.("html").attr("lang")?.split(/[-_]/)[0]?.toLowerCase() ?? null;
 
   // Search ALL pages for email, phone, address, currency — not just homepage
-  let email: string | null = null;
-  let phone: string | null = null;
+  const allEmails: string[] = [];
+  const allPhones: string[] = [];
   let address: string | null = null;
   let currency: string | null = null;
 
@@ -577,14 +599,21 @@ export async function crawlWebsite(url: string): Promise<WebsiteScanData> {
   });
 
   for (const { html } of contactFirst) {
-    if (!email) email = firstBrandedEmail(html);
+    for (const e of extractEmails(html)) {
+      if (!allEmails.includes(e)) allEmails.push(e);
+    }
     const txt = visibleText(html, 30_000);
-    if (!phone) phone = extractPhones(txt)[0] ?? null;
+    for (const p of extractPhones(txt)) {
+      if (!allPhones.includes(p)) allPhones.push(p);
+    }
     if (!address) address = extractAddressFromJsonLd(html);
     if (!address) address = extractAddressFromText(txt);
     if (!currency) currency = detectCurrency(txt);
-    if (email && phone && address && currency) break;
   }
+
+  // Primary: first branded email (or first overall), first phone
+  const email = firstBrandedEmail(allBodies.map((b) => b.html).join("\n")) ?? allEmails[0] ?? null;
+  const phone = allPhones[0] ?? null;
 
   const responseTimeMs = Date.now() - start;
 
@@ -600,6 +629,8 @@ export async function crawlWebsite(url: string): Promise<WebsiteScanData> {
       businessName,
       email,
       phone,
+      emails: allEmails,
+      phones: allPhones,
       address,
       currency,
       language: lang,

@@ -575,6 +575,7 @@ async function runClaudeAnalysisAndPersistScan(
         response = await client.messages.create({
           model,
           max_tokens: 16000,
+          temperature: 0,
           messages: [{ role: "user", content: prompt }],
         });
         console.info("[scan/full] Claude responded", {
@@ -605,6 +606,7 @@ async function runClaudeAnalysisAndPersistScan(
         const retryResponse = await client.messages.create({
           model: modelsToTry[0],
           max_tokens: 16000,
+          temperature: 0,
           messages: [
             { role: "user", content: prompt },
             { role: "assistant", content: text },
@@ -698,10 +700,12 @@ export async function executeFullScanAnalyzeContinuation(scanId: string): Promis
   const [googleResult, shopifyData] = await Promise.all([googlePromise, shopifyPromise]);
 
   if (googleResult) {
+    const mc = googleResult.merchant_center as Record<string, unknown> | undefined;
+    const hasGmcError = mc && typeof mc.error === "string";
     gmbData = JSON.stringify(googleResult.gmb ?? {}, null, 2);
-    gmcJsonForRules = JSON.stringify(googleResult.merchant_center ?? {});
+    gmcJsonForRules = hasGmcError ? "{}" : JSON.stringify(mc ?? {}, null, 2);
     adsJsonForRules = JSON.stringify(googleResult.google_ads ?? {});
-    googleConnected = true;
+    googleConnected = !hasGmcError;
   }
 
   const shopifyJson = JSON.stringify(shopifyData, null, 2);
@@ -853,7 +857,7 @@ export async function executeFullScanPipeline(
     const mc = googleResult.merchant_center as Record<string, unknown> | undefined;
     const hasGmcError = mc && typeof mc.error === "string";
     gmbData = JSON.stringify(googleResult.gmb ?? {}, null, 2);
-    gmcJsonForRules = hasGmcError ? "{}" : JSON.stringify(mc ?? {});
+    gmcJsonForRules = hasGmcError ? "{}" : JSON.stringify(mc ?? {}, null, 2);
     adsJsonForRules = JSON.stringify(googleResult.google_ads ?? {});
     googleConnected = !hasGmcError;
     if (hasGmcError) {

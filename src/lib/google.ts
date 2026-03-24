@@ -34,12 +34,61 @@ export type GoogleOAuthTokens = {
   scope?: string;
 };
 
+export type McAccountIssue = {
+  id?: string;
+  title?: string;
+  severity?: string;
+  detail?: string;
+  documentation?: string;
+  destination?: string;
+  country?: string;
+};
+
+export type McProductStatus = {
+  productId?: string;
+  title?: string;
+  link?: string;
+  destinationStatuses?: Array<{
+    destination?: string;
+    status?: string;
+    approvedCountries?: string[];
+    disapprovedCountries?: string[];
+    pendingCountries?: string[];
+  }>;
+  itemLevelIssues?: Array<{
+    code?: string;
+    severity?: string;
+    description?: string;
+    detail?: string;
+    documentation?: string;
+    servability?: string;
+    attributeName?: string;
+    resolution?: string;
+  }>;
+};
+
+export type McProductSample = {
+  id?: string;
+  title?: string;
+  description?: string;
+  link?: string;
+  price?: { value?: string; currency?: string };
+  gtin?: string;
+  brand?: string;
+  imageLink?: string;
+  availability?: string;
+  condition?: string;
+};
+
 export type MerchantCenterData = {
   auth_method?: string;
   account_identifiers?: Array<{
     merchant_id?: string;
     aggregator_id?: string;
   }>;
+  account_issues?: McAccountIssue[];
+  product_statuses?: McProductStatus[];
+  products_sample?: McProductSample[];
   raw?: unknown;
   error?: string;
 };
@@ -260,23 +309,146 @@ async function getJson<T>(url: string, accessToken: string, headers?: Record<str
   return res.data;
 }
 
+async function fetchMcAccountStatuses(
+  accessToken: string,
+  merchantId: string
+): Promise<McAccountIssue[]> {
+  const url = `https://shoppingcontent.googleapis.com/content/v2.1/${merchantId}/accountstatuses/${merchantId}`;
+  const raw = await getJson<{
+    accountLevelIssues?: Array<{
+      id?: string;
+      title?: string;
+      severity?: string;
+      detail?: string;
+      documentation?: string;
+      destination?: string;
+      country?: string;
+    }>;
+  }>(url, accessToken);
+  return (raw.accountLevelIssues ?? []).map((i) => ({
+    id: i.id,
+    title: i.title,
+    severity: i.severity,
+    detail: i.detail,
+    documentation: i.documentation,
+    destination: i.destination,
+    country: i.country,
+  }));
+}
+
+async function fetchMcProductStatuses(
+  accessToken: string,
+  merchantId: string,
+  maxResults = 50
+): Promise<McProductStatus[]> {
+  const url = `https://shoppingcontent.googleapis.com/content/v2.1/${merchantId}/productstatuses?maxResults=${maxResults}`;
+  const raw = await getJson<{
+    resources?: Array<{
+      productId?: string;
+      title?: string;
+      link?: string;
+      destinationStatuses?: Array<{
+        destination?: string;
+        status?: string;
+        approvedCountries?: string[];
+        disapprovedCountries?: string[];
+        pendingCountries?: string[];
+      }>;
+      itemLevelIssues?: Array<{
+        code?: string;
+        severity?: string;
+        description?: string;
+        detail?: string;
+        documentation?: string;
+        servability?: string;
+        attributeName?: string;
+        resolution?: string;
+      }>;
+    }>;
+  }>(url, accessToken);
+  return (raw.resources ?? []).map((p) => ({
+    productId: p.productId,
+    title: p.title,
+    link: p.link,
+    destinationStatuses: p.destinationStatuses,
+    itemLevelIssues: p.itemLevelIssues,
+  }));
+}
+
+async function fetchMcProducts(
+  accessToken: string,
+  merchantId: string,
+  maxResults = 25
+): Promise<McProductSample[]> {
+  const url = `https://shoppingcontent.googleapis.com/content/v2.1/${merchantId}/products?maxResults=${maxResults}`;
+  const raw = await getJson<{
+    resources?: Array<{
+      id?: string;
+      title?: string;
+      description?: string;
+      link?: string;
+      price?: { value?: string; currency?: string };
+      gtin?: string;
+      brand?: string;
+      imageLink?: string;
+      availability?: string;
+      condition?: string;
+    }>;
+  }>(url, accessToken);
+  return (raw.resources ?? []).map((p) => ({
+    id: p.id,
+    title: p.title,
+    description: p.description,
+    link: p.link,
+    price: p.price,
+    gtin: p.gtin,
+    brand: p.brand,
+    imageLink: p.imageLink,
+    availability: p.availability,
+    condition: p.condition,
+  }));
+}
+
 export async function fetchMerchantCenterData(
   accessToken: string
 ): Promise<MerchantCenterData> {
   try {
-    const raw = await getJson<{
+    const authinfo = await getJson<{
       kind?: string;
       accountIdentifiers?: Array<{ merchantId?: string; aggregatorId?: string }>;
       authMethod?: string;
     }>("https://shoppingcontent.googleapis.com/content/v2.1/accounts/authinfo", accessToken);
 
+    const identifiers = authinfo.accountIdentifiers?.map((item) => ({
+      merchant_id: item.merchantId,
+      aggregator_id: item.aggregatorId,
+    }));
+
+    const merchantId = identifiers?.[0]?.merchant_id;
+    if (!merchantId) {
+      return {
+        auth_method: authinfo.authMethod,
+        account_identifiers: identifiers,
+        raw: authinfo,
+      };
+    }
+
+    const [accountIssues, productStatuses, productsSample] = await Promise.allSettled([
+      fetchMcAccountStatuses(accessToken, merchantId),
+      fetchMcProductStatuses(accessToken, merchantId, 50),
+      fetchMcProducts(accessToken, merchantId, 25),
+    ]);
+
     return {
-      auth_method: raw.authMethod,
-      account_identifiers: raw.accountIdentifiers?.map((item) => ({
-        merchant_id: item.merchantId,
-        aggregator_id: item.aggregatorId,
-      })),
-      raw,
+      auth_method: authinfo.authMethod,
+      account_identifiers: identifiers,
+      account_issues:
+        accountIssues.status === "fulfilled" ? accountIssues.value : undefined,
+      product_statuses:
+        productStatuses.status === "fulfilled" ? productStatuses.value : undefined,
+      products_sample:
+        productsSample.status === "fulfilled" ? productsSample.value : undefined,
+      raw: authinfo,
     };
   } catch (error) {
     return {
