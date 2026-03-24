@@ -1186,6 +1186,18 @@ function ReportPageClient() {
           </div>
         </div>
 
+        {pagesScanned === 0 && (
+          <div className="mt-6 rounded-[22px] border border-amber-200 bg-amber-50 px-5 py-4">
+            <p className="text-sm font-semibold text-amber-800">This website could not be fully scanned</p>
+            <p className="mt-2 text-sm text-amber-700">
+              The site returned no readable content. This usually means it is built with JavaScript rendering (React, Angular, Vue) or actively blocks automated crawlers. The findings below are based on very limited data and may not reflect the actual state of the site.
+            </p>
+            <p className="mt-2 text-sm text-amber-700">
+              Try the full scan with Google connection for deeper analysis, or contact support if this seems incorrect.
+            </p>
+          </div>
+        )}
+
         {showBusinessIdentity && businessFingerprint ? (
           <div className="mt-7 app-frame rounded-[32px] p-6 sm:p-7">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

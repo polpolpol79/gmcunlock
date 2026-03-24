@@ -275,7 +275,10 @@ function extractPhones(text: string): string[] {
   const re =
     /\+?\d[\d\s().-]{8,}\d|\b05\d[\d-]{7,}\b|\+972[\d\s-]{9,}/g;
   const m = text.match(re) ?? [];
-  return [...new Set(m.map((s) => s.replace(/\s+/g, " ").trim()))];
+  return [...new Set(
+    m.map((s) => s.replace(/\s+/g, " ").trim())
+     .filter((s) => s.replace(/\D/g, "").length <= 15)
+  )];
 }
 
 function extractBusinessName($: cheerio.CheerioAPI): string | null {
