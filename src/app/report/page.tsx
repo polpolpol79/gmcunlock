@@ -42,6 +42,8 @@ type SiteFingerprint = {
   businessName: string | null;
   email: string | null;
   phone: string | null;
+  emails?: string[];
+  phones?: string[];
   address: string | null;
   platform: "shopify" | "woocommerce" | "wix" | "other" | null;
   siteType: "ecommerce" | "service" | "leads" | "other" | null;
@@ -1042,6 +1044,13 @@ function ReportPageClient() {
   ];
 
   const businessFingerprint = data.fingerprint ?? data.crawl.fingerprint ?? null;
+  const displaySiteType = (() => {
+    const bt = currentProfile.business_type;
+    if (bt === "ecommerce") return "eCommerce";
+    if (bt === "service_provider") return "Service provider";
+    if (bt === "leads_only") return "Lead generation";
+    return businessFingerprint?.siteType ?? "other";
+  })();
   const showBusinessIdentity =
     businessFingerprint &&
     Object.values(businessFingerprint).some((v) => v != null && String(v).trim() !== "");
@@ -1071,14 +1080,37 @@ function ReportPageClient() {
     data.crawl.allLinksFound?.join(" ") ?? "",
     data.crawl.robotsTxt ?? "",
   ].join("\n");
-  const trustSignals = [
-    { label: "Privacy policy", found: /privacy|פרטיות|privacy-policy/i.test(crawlEvidenceBundle) },
-    { label: "Terms", found: /terms|תקנון|תנאי|terms-of-service/i.test(crawlEvidenceBundle) },
-    { label: "Returns", found: /refund|return|החזר|החזרות|refund-policy/i.test(crawlEvidenceBundle) },
-    { label: "Shipping", found: /shipping|delivery|משלוח|shipping-policy/i.test(crawlEvidenceBundle) },
-    { label: "About page", found: /\/about\b|\/pages\/about\b|אודות|עלינו/i.test(crawlEvidenceBundle) },
-    { label: "Product path", found: /\/products?\//i.test(crawlEvidenceBundle) },
-  ];
+  const trustSignals = (() => {
+    const bt = currentProfile.business_type;
+    const e = crawlEvidenceBundle;
+    const shared: { label: string; found: boolean }[] = [
+      { label: "Privacy policy", found: /privacy|פרטיות|privacy-policy/i.test(e) },
+      { label: "Terms", found: /terms|תקנון|תנאי|terms-of-service/i.test(e) },
+      { label: "About page", found: /\/about\b|\/pages\/about\b|אודות|עלינו/i.test(e) },
+    ];
+    if (bt === "ecommerce" || bt === "other") {
+      return [
+        ...shared,
+        { label: "Returns", found: /refund|return|החזר|החזרות|refund-policy/i.test(e) },
+        { label: "Shipping", found: /shipping|delivery|משלוח|shipping-policy/i.test(e) },
+        { label: "Product path", found: /\/products?\//i.test(e) },
+      ];
+    }
+    if (bt === "service_provider") {
+      return [
+        ...shared,
+        { label: "Contact page", found: /contact|צור.{0,3}קשר|טלפון|phone/i.test(e) },
+        { label: "Service descriptions", found: /שירות|service|what-we-do|our-services/i.test(e) },
+        { label: "Pricing / packages", found: /pricing|price|מחיר|חבילות|packages|תעריף/i.test(e) },
+      ];
+    }
+    // leads_only
+    return [
+      ...shared,
+      { label: "Contact page", found: /contact|צור.{0,3}קשר|טלפון|phone/i.test(e) },
+      { label: "Pricing / packages", found: /pricing|price|מחיר|חבילות|packages|תעריף/i.test(e) },
+    ];
+  })();
   const pagespeedUnavailable = pagespeedSource === "unavailable";
   const pagespeedCached = pagespeedSource === "cached";
   const pagespeedSnapshotLabel = pagespeedUnavailable
@@ -1163,7 +1195,7 @@ function ReportPageClient() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <BrandBadge label={businessFingerprint.platform ?? "Platform unknown"} tone="emerald" icon={<ShopifyIcon />} />
-                <BrandBadge label={businessFingerprint.siteType ?? "Site type unknown"} tone="blue" icon={<TrustIcon />} />
+                <BrandBadge label={displaySiteType} tone="blue" icon={<TrustIcon />} />
               </div>
             </div>
             <p className="mt-2 text-sm app-muted">
@@ -1178,17 +1210,29 @@ function ReportPageClient() {
                 <span className="text-xs uppercase tracking-wide font-semibold text-slate-400">Email found</span>
                 <span className="text-sm break-all text-slate-900 sm:text-right">{businessFingerprint.email ?? "—"}</span>
               </div>
+              {(businessFingerprint.emails?.length ?? 0) > 1 && (
+                <div className="flex flex-col sm:flex-row sm:justify-between gap-1 py-3">
+                  <span className="text-xs uppercase tracking-wide font-semibold text-slate-400">All emails</span>
+                  <span className="text-sm break-all text-slate-900 sm:text-right">{businessFingerprint.emails!.join(", ")}</span>
+                </div>
+              )}
               <div className="flex flex-col sm:flex-row sm:justify-between gap-1 py-3">
                 <span className="text-xs uppercase tracking-wide font-semibold text-slate-400">Phone found</span>
                 <span className="text-sm break-all text-slate-900 sm:text-right">{businessFingerprint.phone ?? "—"}</span>
               </div>
+              {(businessFingerprint.phones?.length ?? 0) > 1 && (
+                <div className="flex flex-col sm:flex-row sm:justify-between gap-1 py-3">
+                  <span className="text-xs uppercase tracking-wide font-semibold text-slate-400">All phones</span>
+                  <span className="text-sm break-all text-slate-900 sm:text-right">{businessFingerprint.phones!.join(", ")}</span>
+                </div>
+              )}
               <div className="flex flex-col sm:flex-row sm:justify-between gap-1 py-3">
                 <span className="text-xs uppercase tracking-wide font-semibold text-slate-400">Platform detected</span>
                 <span className="text-sm text-slate-900 sm:text-right">{businessFingerprint.platform ?? "—"}</span>
               </div>
               <div className="flex flex-col sm:flex-row sm:justify-between gap-1 py-3">
-                <span className="text-xs uppercase tracking-wide font-semibold text-slate-400">Site type detected</span>
-                <span className="text-sm text-slate-900 sm:text-right">{businessFingerprint.siteType ?? "—"}</span>
+                <span className="text-xs uppercase tracking-wide font-semibold text-slate-400">Site type</span>
+                <span className="text-sm text-slate-900 sm:text-right">{displaySiteType}</span>
               </div>
               <div className="flex flex-col sm:flex-row sm:justify-between gap-1 py-3">
                 <span className="text-xs uppercase tracking-wide font-semibold text-slate-400">Address hint</span>

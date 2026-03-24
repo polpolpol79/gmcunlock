@@ -9,7 +9,7 @@ const UA_CHROME =
 const PARALLEL_FETCH_MS = 6000;
 const KEYWORD_PAGE_MS = 3000;
 const MAX_KEYWORD_PAGES = 5;
-const MAX_TEXT_PER_PAGE = 2000;
+const MAX_TEXT_PER_PAGE = 4000;
 
 const FREE_EMAIL = new Set([
   "gmail.com",
@@ -179,6 +179,14 @@ function uniqueUrls(urls: string[]): string[] {
   return [...new Set(urls)];
 }
 
+function safeDecodeUri(uri: string): string {
+  try {
+    return decodeURIComponent(uri);
+  } catch {
+    return uri;
+  }
+}
+
 function pickKeywordUrls(
   anchors: { href: string; text: string }[],
   max: number
@@ -186,7 +194,7 @@ function pickKeywordUrls(
   const picked: string[] = [];
   for (const { href, text } of anchors) {
     if (picked.length >= max) break;
-    if (KEYWORD_RE.test(href) || KEYWORD_RE.test(text)) {
+    if (KEYWORD_RE.test(safeDecodeUri(href)) || KEYWORD_RE.test(text)) {
       if (!picked.includes(href)) picked.push(href);
     }
   }
@@ -518,7 +526,7 @@ export async function crawlWebsite(url: string): Promise<WebsiteScanData> {
     : [];
 
   const keywordCandidates = pickKeywordUrls(anchors, MAX_KEYWORD_PAGES);
-  const fromSitemap = sitemapUrls.filter((u) => KEYWORD_RE.test(u)).slice(0, MAX_KEYWORD_PAGES);
+  const fromSitemap = sitemapUrls.filter((u) => KEYWORD_RE.test(safeDecodeUri(u))).slice(0, MAX_KEYWORD_PAGES);
   const keywordUrls = uniqueUrls([...keywordCandidates, ...fromSitemap]).slice(0, MAX_KEYWORD_PAGES);
 
   let productUrls = pickProductUrls(anchors);

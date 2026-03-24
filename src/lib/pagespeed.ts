@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const PAGESPEED_API_URL = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed";
-const PAGESPEED_CACHE_TTL_MS = 10 * 60 * 1000;
+const PAGESPEED_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export type PageSpeedSource = "live" | "cached" | "unavailable";
 export type PageSpeedStrategy = "mobile" | "desktop" | "unknown";
@@ -240,12 +240,16 @@ export async function getPageSpeedData(
     let lastError: Error | null = null;
     const timeoutMs = mode === "background" ? 35000 : 25000;
 
-    try {
-      const data = await requestPageSpeed(targetUrl, apiKey, "mobile", timeoutMs);
-      setCachedPageSpeed(targetUrl, data);
-      return data;
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error("PageSpeed request failed");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const data = await requestPageSpeed(targetUrl, apiKey, "mobile", timeoutMs);
+        setCachedPageSpeed(targetUrl, data);
+        return data;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error("PageSpeed request failed");
+        console.warn(`[pagespeed] attempt ${attempt + 1} failed for ${targetUrl}: ${lastError.message}`);
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 2000));
+      }
     }
 
     const staleCached = getAnyCachedPageSpeed(targetUrl);
