@@ -21,8 +21,8 @@ import {
   type UserProfileInput,
 } from "@/lib/scan-schemas";
 
-const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5";
-const FALLBACK_CLAUDE_MODEL = "claude-opus-4-5";
+const DEFAULT_CLAUDE_MODEL = "claude-3-5-haiku-20241022";
+const FALLBACK_CLAUDE_MODEL = "claude-sonnet-4-5";
 
 type ChecklistResultValue = ClaudeAnalysisOutput["checklist_results"][string];
 
@@ -387,9 +387,8 @@ export async function runFreeScanPipeline(
 
   let t0 = Date.now();
   console.log("[TIMING] crawl + osint + pagespeed (parallel) start");
-  const [crawlSettled, osintSettled, pagespeedSettled] = await Promise.allSettled([
+  const [crawlSettled, pagespeedSettled] = await Promise.allSettled([
     crawlWebsite(url),
-    gatherOsint(url, null),
     getPageSpeedData(url, "fast"),
   ]);
 
@@ -417,8 +416,7 @@ export async function runFreeScanPipeline(
     );
     crawl = defaultCrawlDataForFree(url);
   }
-  const osintData = osintSettled.status === "fulfilled" ? osintSettled.value : null;
-  const osintBlock = osintData ? formatOsintBlock(osintData) : "";
+  const osintBlock = "";
 
   console.log("[TIMING] crawl + osint + pagespeed done", Date.now() - t0, "ms");
 
@@ -472,14 +470,14 @@ export async function runFreeScanPipeline(
     try {
       response = await client.messages.create({
         model: preferredModel,
-        max_tokens: 2200,
+        max_tokens: 1500,
         messages: [{ role: "user", content: prompt }],
       });
     } catch (modelErr) {
       if (preferredModel === FALLBACK_CLAUDE_MODEL) throw modelErr;
       response = await client.messages.create({
         model: FALLBACK_CLAUDE_MODEL,
-        max_tokens: 2200,
+        max_tokens: 1500,
         messages: [{ role: "user", content: prompt }],
       });
     }

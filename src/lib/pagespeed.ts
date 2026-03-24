@@ -245,8 +245,8 @@ export async function getPageSpeedData(
             { strategy: "desktop", timeoutMs: 25000 },
           ]
         : [
-            { strategy: "mobile", timeoutMs: 30000 },
-            { strategy: "desktop", timeoutMs: 25000 },
+            { strategy: "mobile", timeoutMs: 15000 },
+            { strategy: "desktop", timeoutMs: 12000 },
           ];
 
     const controllers = attempts.map(() => new AbortController());

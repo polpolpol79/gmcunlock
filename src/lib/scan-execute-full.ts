@@ -433,14 +433,14 @@ async function runClaudeAnalysisAndPersistScan(
     try {
       response = await client.messages.create({
         model: preferredModel,
-        max_tokens: 9000,
+        max_tokens: 4500,
         messages: [{ role: "user", content: prompt }],
       });
     } catch (modelErr) {
       if (preferredModel === FALLBACK_CLAUDE_MODEL) throw modelErr;
       response = await client.messages.create({
         model: FALLBACK_CLAUDE_MODEL,
-        max_tokens: 9000,
+        max_tokens: 4500,
         messages: [{ role: "user", content: prompt }],
       });
     }

@@ -6,9 +6,9 @@ const UA_GOOGLEBOT =
   "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
 const UA_CHROME =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-const PARALLEL_FETCH_MS = 8000;
-const KEYWORD_PAGE_MS = 5000;
-const MAX_KEYWORD_PAGES = 10;
+const PARALLEL_FETCH_MS = 6000;
+const KEYWORD_PAGE_MS = 3000;
+const MAX_KEYWORD_PAGES = 5;
 const MAX_TEXT_PER_PAGE = 2000;
 
 const FREE_EMAIL = new Set([
