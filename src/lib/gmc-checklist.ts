@@ -418,7 +418,9 @@ CRITICAL RULES (must follow):
 - Only use "fail" when there is DIRECT evidence in the data contradicting the rule.
 - Reserve highest severity only for issues that can directly cause Google Merchant Center or Ads suspension.
 - Do not treat minor styling or subjective design preferences as critical.
-- If a data section is "Not connected" or unavailable → use "unknown" for rules that depend solely on that source; do not fail those rules from missing data.
+- If a data section is "Not connected", unavailable, or shows an API error → use "unknown" for ALL rules that depend solely on that source. Do NOT speculate about what that source might contain.
+- NEVER fabricate problems from missing data. If you could not access GMC data, do NOT write that "the account may be suspended" or "product feed compliance cannot be verified" as critical issues. Simply mark those rules as "unknown".
+- Only include items in critical_issues that have CONCRETE, VERIFIED evidence from the data. If you have no evidence, it is NOT a critical issue — at most it is a recommendation.
 
 EVIDENCE QUALITY — EXAMPLES:
 
@@ -435,6 +437,8 @@ BAD evidence (vague, speculative — DO NOT USE):
   "The site probably doesn't have proper shipping information."
   "Based on the general structure, the store appears to lack transparency."
   "Contact information could be improved."
+  "GMC API returned 403 — the account may be suspended." ← NEVER speculate from API errors
+  "Unable to verify product images — high risk for violations." ← Do NOT create issues from missing data
 
 For EVERY critical_issues[].evidence field you write, you MUST include:
 1. The EXACT quoted text or value from the data
@@ -526,8 +530,15 @@ export function buildAnalysisPrompt(
   const mission = isFreeMode
     ? `You MUST analyze the public data below and return evidence-backed findings and practical recommendations only.\n\nBUSINESS CONTEXT: ${businessContext[userProfile.business_type]}`
     : `You MUST perform a comprehensive compliance audit against the ACTUAL DATA below. The business owner is ${userProfile.blocked_where === "not_blocked" ? "proactively checking for compliance risks" : "dealing with a Google suspension or policy violation"} and needs a professional, evidence-backed diagnosis they can act on immediately.\n\nBUSINESS CONTEXT: ${businessContext[userProfile.business_type]}`;
+  const detectedLang = fp.language ?? null;
+  const langName = languageLabel(detectedLang);
+  const langInstruction = detectedLang && detectedLang !== "en"
+    ? `- OUTPUT LANGUAGE: The website is in ${langName}. Write ALL user-facing text (headline, problem, evidence, fix, why, benefit, appeal_tip, title, issue descriptions) in ${langName}. Only keep JSON keys and enum values (pass/fail/warning/unknown, effort levels, risk_level) in English.`
+    : `- OUTPUT LANGUAGE: Write all user-facing text in English.`;
+
   const instructionBlock = isFreeMode
     ? `CLAUDE INSTRUCTIONS:
+${langInstruction}
 - Focus on public-site quality, clarity, trust, and readiness improvements.
 - Do NOT diagnose exact suspension causes in free mode.
 - Do NOT claim a finding caused a Google suspension unless directly proven by connected account data.
@@ -538,6 +549,7 @@ export function buildAnalysisPrompt(
 - Never say "likely", "probably", or speculate.
 - checklist_results may ONLY include the rule IDs listed under "PUBLIC WEBSITE IMPROVEMENTS TO CHECK" below.`
     : `CLAUDE INSTRUCTIONS — PAID COMPLIANCE AUDIT:
+${langInstruction}
 - You are writing for a business owner, NOT a technical developer. Use clear language they can understand.
 - For EVERY critical issue found: explain WHY this specific problem triggers a Google suspension or policy violation — not just that it violates a rule.
 - Quote the EXACT text, value, or absence of data that proves the problem. Include the page URL.
@@ -545,8 +557,10 @@ export function buildAnalysisPrompt(
 - If data is missing for a rule → checklist_results must be "unknown", not "fail".
 - Evaluate ONLY checklist rule IDs listed under "COMPLIANCE RULES TO CHECK" below.
 - When multiple data sources are connected (website, GMC, Ads, Shopify) plus OSINT/public search signals: actively compare them and flag any mismatches in business name, address, phone, email, or product data. We do NOT use the Google Business Profile Management API; for Maps/Search visibility use the OSINT section and the website crawl only.
+- IMPORTANT about OSINT data: If the OSINT section says "not found via Places API" — this DOES NOT mean the business is not on Google. The automated search has limited accuracy. Do NOT list "no Google Business Profile" as a critical issue unless you have strong independent evidence.
+- IMPORTANT about GMC data: If the GMC section shows an error or "Not connected" — do NOT speculate about suspension reasons, account status, or product feed issues. Mark all GMC-dependent rules as "unknown" and recommend the user verify their GMC account directly.
 - For appeal_tip: write a DETAILED, structured appeal strategy — not a single sentence. Include: (1) what the business owner should fix BEFORE submitting the appeal, (2) what to write in the appeal explanation, (3) what evidence/screenshots to attach, (4) what tone to use. Make it ready to copy-paste.
-- risk_score: 0=perfect compliance, 100=almost certain suspension. Be accurate.`;
+- risk_score: 0=perfect compliance, 100=almost certain suspension. Be accurate — do NOT inflate risk based on data you could not access.`;
   const rulesSection = isFreeMode
     ? `═══ PUBLIC WEBSITE IMPROVEMENTS TO CHECK ═══
 ${recList || "(none in applicable set)"}`
@@ -614,22 +628,19 @@ When multiple sources are connected, compare: business/brand name, physical addr
 ${rulesSection}
 ${extraNotes}
 
-Return JSON only — no markdown fences, no commentary. Use this exact shape:
+Return JSON only — no markdown fences, no commentary. Use this EXACT shape (no extra keys):
 {
   "risk_score": <0-100>,
   "risk_level": "CRITICAL|HIGH|MEDIUM|LOW",
-  "headline": "<one sentence summarizing the most critical finding>",
-  "profile_detected": "<profile type you infer from data>",
-  "suspension_reason": "<if risk is HIGH or CRITICAL: your best diagnosis of the PRIMARY reason Google would suspend or has suspended this account, based on the data — be specific, not generic>",
+  "headline": "<one sentence summarizing the most important finding>",
   "consistency_issues": [
     {
-      "field": "<field name>",
-      "site_value": "<exact value from website/crawl>",
-      "gmc_value": "<exact value from GMC or N/A>",
-      "gmb_value": "<exact value from public OSINT/search snippets or N/A — not from GMB Management API>",
-      "shopify_value": "<exact value from Shopify or N/A>",
-      "ads_value": "<exact value from Google Ads or N/A>",
-      "issue": "<precise description of the mismatch and why it matters>"
+      "field": "<field name, e.g. business_name, phone, email, address>",
+      "website": "<exact value from website/crawl>",
+      "gmc": "<exact value from GMC or N/A>",
+      "gmb": "<exact value from public OSINT/search or N/A>",
+      "shopify": "<exact value from Shopify or N/A>",
+      "status": "match|mismatch|unknown"
     }
   ],
   "critical_issues": [
@@ -637,19 +648,10 @@ Return JSON only — no markdown fences, no commentary. Use this exact shape:
       "item_id": <checklist rule number>,
       "section": "<category>",
       "title": "<short title>",
-      "problem": "<precise problem description — explain in plain language what is wrong>",
-      "why_it_matters": "<explain specifically why THIS issue can trigger a Google suspension or policy flag>",
+      "problem": "<precise problem description — explain in plain language what is wrong AND why it matters for Google compliance>",
       "evidence": "<EXACT quote, value, or observation from the scan data — include page URL. If absent: state exactly what was missing and where it should be>",
       "fix": "<specific, actionable fix steps — be concrete, not generic>",
       "effort": "quick|medium|hard"
-    }
-  ],
-  "urgent_fixes": [
-    {
-      "order": <1-10>,
-      "title": "<title>",
-      "action": "<concrete action steps>",
-      "time_estimate": "<realistic time estimate>"
     }
   ],
   "recommendations": [
@@ -663,8 +665,7 @@ Return JSON only — no markdown fences, no commentary. Use this exact shape:
   "checklist_results": {
     "<item_id>": "pass|fail|warning|unknown"
   },
-  "appeal_tip": "<DETAILED appeal strategy — write 4-6 sentences minimum. Structure: (1) What to fix BEFORE submitting (specific items). (2) What to write in the appeal text (tone, key points to mention, what to admit vs. what to dispute). (3) What evidence/screenshots to attach. (4) Timeline expectations. This should be ready for the business owner to act on immediately.>",
-  "resolution_time": "<realistic estimate for full resolution if all fixes are applied>"
+  "appeal_tip": "<DETAILED appeal strategy — write 4-6 sentences minimum. Structure: (1) What to fix BEFORE submitting (specific items). (2) What to write in the appeal text (tone, key points to mention, what to admit vs. what to dispute). (3) What evidence/screenshots to attach. (4) Timeline expectations. This should be ready for the business owner to act on immediately.>"
 }
 `.trim();
 }

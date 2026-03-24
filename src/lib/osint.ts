@@ -81,7 +81,7 @@ async function fetchPublicGbp(
   const apiKey = process.env.GOOGLE_PLACES_API_KEY ?? process.env.PAGESPEED_API_KEY;
   if (!apiKey) return null;
 
-  const query = businessName ? `${businessName}` : domain;
+  const query = businessName ? `${businessName} ${domain}` : domain;
 
   try {
     const res = await axios.get<{
@@ -205,7 +205,12 @@ export function formatOsintBlock(osint: OsintData): string {
     if (g.phone) lines.push(`  Phone: ${g.phone}`);
     if (g.businessStatus) lines.push(`  Status: ${g.businessStatus}`);
   } else {
-    lines.push("Google Business Profile (public): not found");
+    const apiKey = process.env.GOOGLE_PLACES_API_KEY ?? process.env.PAGESPEED_API_KEY;
+    lines.push(
+      apiKey
+        ? "Google Business Profile (public): not found via Places API (this does NOT mean the business is absent from Google — the automated search may have missed it)"
+        : "Google Business Profile (public): not checked (Places API key not configured)"
+    );
   }
 
   if (osint.trustpilotRating) {

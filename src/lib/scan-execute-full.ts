@@ -709,9 +709,10 @@ export async function executeFullScanAnalyzeContinuation(scanId: string): Promis
 
   const shopifyJson = JSON.stringify(shopifyData, null, 2);
 
+  const siteFp = toSiteFingerprint(crawlData);
   let osintData: Awaited<ReturnType<typeof gatherOsint>> | null = null;
   try {
-    osintData = await gatherOsint(url, null);
+    osintData = await gatherOsint(url, siteFp.businessName ?? null);
   } catch {
     osintData = null;
   }
@@ -723,7 +724,6 @@ export async function executeFullScanAnalyzeContinuation(scanId: string): Promis
     shopifyJson,
     gmbJson: gmbData,
   });
-  const siteFp = toSiteFingerprint(crawlData);
   const applicableItems = getApplicableRules(siteFp, availableSources);
 
   const result = await runClaudeAnalysisAndPersistScan(
@@ -780,9 +780,8 @@ export async function executeFullScanPipeline(
   let crawlData: CrawlResult;
   let collectionIssue = "";
 
-  const [crawlResult, osintResult, pagespeedResult] = await Promise.allSettled([
+  const [crawlResult, pagespeedResult] = await Promise.allSettled([
     crawlWebsite(url),
-    gatherOsint(url, null),
     getPageSpeedData(url, "fast"),
   ]);
 
@@ -823,7 +822,8 @@ export async function executeFullScanPipeline(
     phaseDetailFor(SCAN_PHASES.google_shopify)
   );
 
-  // Google + Shopify fetched in parallel
+  const fp = toSiteFingerprint(crawlData);
+
   let gmbData = "";
   let gmcJsonForRules = "";
   let adsJsonForRules = "";
@@ -844,17 +844,29 @@ export async function executeFullScanPipeline(
 
   const shopifyPromise = fetchShopifyConnectedDataForUser(userId);
 
-  const [googleResult, shopifyData] = await Promise.all([googlePromise, shopifyPromise]);
+  const osintPromise = gatherOsint(url, fp.businessName ?? null).catch(() => null);
+
+  const [googleResult, shopifyData, osintData] = await Promise.all([
+    googlePromise,
+    shopifyPromise,
+    osintPromise,
+  ]);
 
   if (googleResult) {
+    const mc = googleResult.merchant_center as Record<string, unknown> | undefined;
+    const hasGmcError = mc && typeof mc.error === "string";
     gmbData = JSON.stringify(googleResult.gmb ?? {}, null, 2);
-    gmcJsonForRules = JSON.stringify(googleResult.merchant_center ?? {});
+    gmcJsonForRules = hasGmcError ? "{}" : JSON.stringify(mc ?? {});
     adsJsonForRules = JSON.stringify(googleResult.google_ads ?? {});
-    googleConnected = true;
+    googleConnected = !hasGmcError;
+    if (hasGmcError) {
+      collectionIssue = collectionIssue
+        ? `${collectionIssue}; GMC API error: ${mc.error}`
+        : `GMC API error: ${mc.error}`;
+    }
   }
 
   const shopifyJson = JSON.stringify(shopifyData, null, 2);
-  const osintData = osintResult.status === "fulfilled" ? osintResult.value : null;
   const osintBlock = osintData ? formatOsintBlock(osintData) : "";
 
   const availableSources = inferAvailableDataSources(crawlData, pageSpeedData, {
@@ -863,8 +875,7 @@ export async function executeFullScanPipeline(
     shopifyJson,
     gmbJson: gmbData,
   });
-  const siteFp = toSiteFingerprint(crawlData);
-  const applicableItems = getApplicableRules(siteFp, availableSources);
+  const applicableItems = getApplicableRules(fp, availableSources);
 
   if (scanId && process.env.SCAN_ENABLE_SPLIT === "1" && getScanJobContinueSecret()) {
     await persistScanIntermediateState(scanId, {
