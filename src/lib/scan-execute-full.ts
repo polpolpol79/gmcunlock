@@ -699,7 +699,7 @@ export async function executeFullScanPipeline(
   const siteFp = toSiteFingerprint(crawlData);
   const applicableItems = getApplicableRules(siteFp, availableSources);
 
-  if (scanId && getScanJobContinueSecret() && process.env.SCAN_DISABLE_SPLIT !== "1") {
+  if (scanId && process.env.SCAN_ENABLE_SPLIT === "1" && getScanJobContinueSecret()) {
     await persistScanIntermediateState(scanId, {
       crawl: crawlData,
       pagespeed: pageSpeedData,

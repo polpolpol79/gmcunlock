@@ -150,6 +150,22 @@ export async function POST(req: Request) {
           { status: 500 }
         );
       }
+      if (row.scan_status !== "done") {
+        const res = NextResponse.json(
+          {
+            ok: true,
+            data: {
+              pending: true,
+              scan_id: pendingId,
+              scan_type: "paid",
+              google_connected: row.google_connected ?? false,
+            },
+          },
+          { status: 202 }
+        );
+        applyAppSessionCookie(res, req, session);
+        return res;
+      }
       const crawl = row.crawl as CrawlResult;
       const res = NextResponse.json({
         ok: true,
