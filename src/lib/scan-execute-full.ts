@@ -245,91 +245,231 @@ function buildFallbackAnalysis(params: {
   pagespeed: PageSpeedData;
   crawl: CrawlResult;
   reason: string;
+  googleConnected?: boolean;
 }): ClaudeAnalysisResult {
   const issues: ClaudeIssue[] = [];
+  const recommendations: ClaudeRecommendation[] = [];
   const fp = params.crawl.fingerprint;
+  const pagesScanned = params.crawl.pages.length;
   const email = fp.email?.trim() ?? "";
   const hasEmail = email.length > 0;
-  const emailIsBranded = hasEmail && !/@(gmail|yahoo|hotmail|outlook|aol|live|icloud)\./i.test(email);
+  const FREE_EMAIL_RE = /@(gmail|yahoo|hotmail|outlook|aol|live|icloud)\./i;
+  const emailIsBranded = hasEmail && !FREE_EMAIL_RE.test(email);
   const bundle =
-    params.crawl.pages.map((p) => `${p.url}\n${p.text}`).join("\n") + params.crawl.allLinksFound.join(" ");
-  const hasPrivacyPolicy = /privacy|פרטיות/i.test(bundle);
-  const hasTerms = /terms|conditions|תנאי|תקנון|מדיניות|legal/i.test(bundle);
+    params.crawl.pages.map((p) => `${p.url}\n${p.text}`).join("\n") +
+    params.crawl.allLinksFound.join(" ");
+  const scannedUrlsList = params.crawl.pages.map((p) => p.url).join(", ") || "none";
+
+  const isEcommerce = !params.profile?.business_type || params.profile.business_type.startsWith("ecommerce");
+  const hasPrivacyPolicy = /privacy|פרטיות|מדיניות.{0,5}פרטיות/i.test(bundle);
+  const hasTerms = /terms|conditions|תנאי|תקנון|מדיניות/i.test(bundle);
+  const hasReturns = /return|refund|החזר|החזרות/i.test(bundle);
+  const hasShipping = /shipping|delivery|משלוח|הובלה/i.test(bundle);
+  const hasContactPage = /contact|צור.{0,3}קשר/i.test(bundle);
+  const hasTranslationLeak = /translation missing:/i.test(bundle);
 
   if (!params.crawl.hasSSL) {
     issues.push({
       item_id: 21,
-      section: "Checkout & security",
-      title: "Missing HTTPS",
-      problem: "The website does not appear to enforce HTTPS.",
-      evidence: `Final URL resolved as non-HTTPS for ${params.url}`,
-      fix: "Enable SSL and force HTTPS redirect on all pages.",
+      section: "Checkout & Security",
+      title: "Website is not using HTTPS",
+      problem: "The website URL does not enforce SSL/HTTPS.",
+      evidence: `Final URL: ${params.crawl.url} — no HTTPS detected.`,
+      fix: "Enable SSL certificate and force HTTPS redirect on all pages.",
       effort: "quick",
     });
+    recommendations.push({
+      item_id: 21,
+      title: "Enable HTTPS across the whole site",
+      why: "A secure site is a basic trust signal for users and ad review systems.",
+      benefit: "Improves trust, conversion confidence, and technical readiness.",
+    });
   }
-  if (!hasEmail || !emailIsBranded) {
+
+  if (!hasEmail) {
     issues.push({
       item_id: 8,
-      section: "Contact details",
-      title: "Contact email quality",
-      problem: "Email is missing or not branded.",
-      evidence: `email=${hasEmail ? email : "(none)"}, branded_domain=${emailIsBranded}`,
-      fix: "Use a branded domain email in footer and contact page.",
+      section: "Contact Details",
+      title: "No email address found on the website",
+      problem: "No email address was detected on any scanned page.",
+      evidence: `Scanned ${pagesScanned} pages (${scannedUrlsList}). No email address pattern found.`,
+      fix: "Add a branded email address (e.g. info@yourdomain.com) to the footer and contact page.",
+      effort: "quick",
+    });
+    recommendations.push({
+      item_id: 8,
+      title: "Add a visible branded email address",
+      why: "Visitors and reviewers expect a clear support channel on the site.",
+      benefit: "Improves transparency and makes the business look more established.",
+    });
+  } else if (!emailIsBranded) {
+    issues.push({
+      item_id: 8,
+      section: "Contact Details",
+      title: "Email is from a free provider, not branded",
+      problem: "The email found uses a free provider instead of the business domain.",
+      evidence: `Found email: ${email} — this is a free email provider, not a branded domain email.`,
+      fix: "Use a branded email address (info@yourdomain.com) instead of a free provider.",
       effort: "quick",
     });
   }
-  if (params.pagespeed.performance < 50) {
+
+  if (!hasPrivacyPolicy) {
+    issues.push({
+      item_id: 16,
+      section: "Policy Pages",
+      title: "No privacy policy page found",
+      problem: "No privacy policy page was detected among scanned pages or internal links.",
+      evidence: `Scanned ${pagesScanned} pages and ${params.crawl.allLinksFound.length} internal links. None match 'privacy' or 'פרטיות'.`,
+      fix: "Create a privacy policy page and link to it from the footer navigation.",
+      effort: "quick",
+    });
+    recommendations.push({
+      item_id: 16,
+      title: "Publish a privacy policy in the footer",
+      why: "Privacy transparency is a standard trust signal for ecommerce and lead-gen sites.",
+      benefit: "Reduces friction for visitors and improves overall site credibility.",
+    });
+  }
+
+  if (isEcommerce && !hasReturns) {
+    issues.push({
+      item_id: 18,
+      section: "Policy Pages",
+      title: "No returns/refund policy found",
+      problem: "No returns or refund policy was found on the website.",
+      evidence: `Scanned ${pagesScanned} pages. No URL or text matching 'returns', 'refund', 'החזר' found.`,
+      fix: "Add a clear returns & refund policy page with return period, conditions, and process.",
+      effort: "quick",
+    });
+  }
+
+  if (isEcommerce && !hasShipping) {
+    issues.push({
+      item_id: 19,
+      section: "Policy Pages",
+      title: "No shipping policy found",
+      problem: "No shipping/delivery policy was found on the website.",
+      evidence: `Scanned ${pagesScanned} pages. No URL or text matching 'shipping', 'delivery', 'משלוח' found.`,
+      fix: "Add a shipping policy page with delivery times, costs, and carrier information.",
+      effort: "quick",
+    });
+  }
+
+  if (!fp.phone && !hasContactPage) {
+    issues.push({
+      item_id: 9,
+      section: "Contact Details",
+      title: "No phone number or contact page found",
+      problem: "No phone number and no contact page were found.",
+      evidence: `Scanned ${pagesScanned} pages. No phone pattern and no URL matching 'contact' or 'צור קשר' found.`,
+      fix: "Add a contact page with phone number, email, and physical address.",
+      effort: "quick",
+    });
+    recommendations.push({
+      item_id: 9,
+      title: "Add a complete contact page",
+      why: "A visible contact page makes the business look real and reachable.",
+      benefit: "Improves trust and helps users take the next step confidently.",
+    });
+  }
+
+  if (!fp.address) {
+    recommendations.push({
+      item_id: 10,
+      title: "Add a visible business or returns address",
+      why: "A public address strengthens trust and helps customers understand who is behind the site.",
+      benefit: "Improves transparency and reduces friction around support, returns, and legitimacy.",
+    });
+  }
+
+  if (hasTranslationLeak) {
+    issues.push({
+      item_id: 73,
+      section: "UX & Trust",
+      title: "Visible untranslated placeholder text appears on the site",
+      problem: "Visitors can see raw translation placeholder text instead of polished UI copy.",
+      evidence: `Detected repeated text like 'Translation missing:' in scanned pages (${scannedUrlsList}).`,
+      fix: "Fix missing localization keys or remove untranslated placeholders from the live theme.",
+      effort: "quick",
+    });
+    recommendations.push({
+      item_id: 73,
+      title: "Fix visible translation placeholder text",
+      why: "Broken UI copy makes the site feel unfinished and harms trust immediately.",
+      benefit: "Creates a cleaner premium experience and reduces buyer hesitation.",
+    });
+  }
+
+  if (params.pagespeed.performance > 0 && params.pagespeed.performance < 50) {
     issues.push({
       item_id: 7,
       section: "Performance",
-      title: "Low performance score",
-      problem: "PageSpeed performance is low.",
-      evidence: `Performance score=${params.pagespeed.performance}`,
-      fix: "Prioritize JS/CSS optimization and improve LCP/TTFB.",
+      title: "Low PageSpeed performance score",
+      problem: "Website performance is below acceptable thresholds.",
+      evidence: `PageSpeed score: ${params.pagespeed.performance}/100. LCP: ${params.pagespeed.lcp}. TTFB: ${params.pagespeed.ttfb}.`,
+      fix: "Optimize images, reduce JavaScript bundle size, and improve server response time.",
       effort: "medium",
+    });
+    recommendations.push({
+      item_id: 7,
+      title: "Improve speed before sending more paid traffic",
+      why: "Slow sites waste traffic and make the business feel less reliable.",
+      benefit: "Better conversion rate, better user experience, and better ad readiness.",
+    });
+  } else if (params.pagespeed.performance === 0) {
+    recommendations.push({
+      item_id: 7,
+      title: "Retry PageSpeed and review real loading bottlenecks",
+      why: "Performance data could not be collected, so speed risk is still partially unknown.",
+      benefit: "Gives you a clearer picture of mobile friction before sending more paid traffic.",
     });
   }
 
-  const fallback = {
-    risk_score: Math.max(
-      20,
-      Math.min(
-        95,
-        40 +
-          (params.pagespeed.performance < 50 ? 20 : 0) +
-          (!hasEmail || !emailIsBranded ? 15 : 0) +
-          (!hasPrivacyPolicy || !hasTerms ? 10 : 0)
-      )
-    ),
-    risk_level: "HIGH" as const,
-    headline:
-      "Automated fallback analysis used due to temporary AI network/certificate issue.",
-    critical_issues: issues.slice(0, 3),
-    recommendations: [
-      {
-        item_id: 13,
-        title: "Align business identity across channels",
-        why: "Inconsistent contact/business details are a frequent suspension trigger.",
-        benefit: "Improves trust signals for Merchant Center reviews.",
-      },
-      {
-        item_id: 16,
-        title: "Strengthen policy visibility",
-        why: "Missing or weak policy pages reduce transparency.",
-        benefit: "Reduces compliance ambiguity and review friction.",
-      },
-    ],
+  if (!params.googleConnected) {
+    recommendations.push({
+      item_id: 99,
+      title: "Connect Google account for deeper diagnosis",
+      why: "Without connected Google data, the scan relies only on public website signals.",
+      benefit: "Unlocks real Merchant Center status, product feed issues, and account-level warnings.",
+    });
+  }
+
+  if (recommendations.length < 2) {
+    recommendations.push({
+      item_id: 13,
+      title: "Align business identity across channels",
+      why: "Inconsistent contact/business details are a frequent suspension trigger.",
+      benefit: "Improves trust signals for Merchant Center reviews.",
+    });
+  }
+
+  const headlineParts: string[] = [];
+  headlineParts.push(`Scanned ${pagesScanned} page${pagesScanned !== 1 ? "s" : ""}`);
+  if (issues.length > 0) headlineParts.push(`found ${issues.length} issue${issues.length !== 1 ? "s" : ""}`);
+  else headlineParts.push("no critical issues detected from available data");
+  if (params.pagespeed.performance > 0) {
+    headlineParts.push(`PageSpeed ${params.pagespeed.performance}/100`);
+  } else {
+    headlineParts.push("PageSpeed unavailable in this run");
+  }
+
+  const riskScore = Math.min(
+    95,
+    Math.max(20, 30 + issues.length * 12 + (params.pagespeed.performance < 50 ? 10 : 0))
+  );
+
+  return ClaudeAnalysisSchema.parse({
+    risk_score: riskScore,
+    risk_level: riskScore >= 70 ? "HIGH" : riskScore >= 40 ? "MEDIUM" : "LOW",
+    headline: headlineParts.join(". ") + ".",
+    critical_issues: issues.slice(0, 5),
+    recommendations: recommendations.slice(0, 6),
     consistency_issues: [],
     checklist_results: {} as Record<string, ChecklistResultValue>,
     appeal_tip:
-      "When submitting appeal, list exact changes made and where they appear publicly on your website.",
-  };
-
-  const parsed = ClaudeAnalysisSchema.parse(fallback);
-  return {
-    ...parsed,
-    headline: `${parsed.headline} (${params.reason})`,
-  };
+      "When submitting an appeal, list exact changes made and where they appear publicly on your website. AI analysis was temporarily unavailable — retry for full Claude-powered diagnosis.",
+  });
 }
 
 export function defaultPageSpeedData(reason: string): PageSpeedData {
@@ -433,21 +573,44 @@ async function runClaudeAnalysisAndPersistScan(
     try {
       response = await client.messages.create({
         model: preferredModel,
-        max_tokens: 4500,
+        max_tokens: 16000,
         messages: [{ role: "user", content: prompt }],
       });
     } catch (modelErr) {
       if (preferredModel === FALLBACK_CLAUDE_MODEL) throw modelErr;
       response = await client.messages.create({
         model: FALLBACK_CLAUDE_MODEL,
-        max_tokens: 4500,
+        max_tokens: 16000,
         messages: [{ role: "user", content: prompt }],
       });
     }
 
-    const text = extractClaudeText(response.content);
+    let text = extractClaudeText(response.content);
     if (!text) {
       throw new Error("Claude returned an empty response");
+    }
+
+    if (response.stop_reason === "max_tokens") {
+      console.warn("[scan/full] Claude output truncated – retrying with compact prompt");
+      try {
+        const retryResponse = await client.messages.create({
+          model: preferredModel,
+          max_tokens: 16000,
+          messages: [
+            { role: "user", content: prompt },
+            { role: "assistant", content: text },
+            {
+              role: "user",
+              content:
+                "Your previous response was cut off. Return the COMPLETE JSON object again — shorter strings, no markdown, just the JSON.",
+            },
+          ],
+        });
+        const retryText = extractClaudeText(retryResponse.content);
+        if (retryText) text = retryText;
+      } catch {
+        // keep original truncated text and try to parse it
+      }
     }
 
     analysis = parseClaudeJson(text);
@@ -473,6 +636,7 @@ async function runClaudeAnalysisAndPersistScan(
         pagespeed: pageSpeedData,
         crawl: crawlData,
         reason: collectionIssue ? `${collectionIssue}; ${reason}` : reason,
+        googleConnected,
       });
     } else {
       if (scanId) {
@@ -625,7 +789,10 @@ export async function executeFullScanPipeline(
   if (pagespeedResult.status === "fulfilled") {
     pageSpeedData = pagespeedResult.value;
   } else {
-    pageSpeedData = defaultPageSpeedData("PageSpeed timed out during scan");
+    const psReason = pagespeedResult.reason instanceof Error
+      ? pagespeedResult.reason.message
+      : "PageSpeed unavailable during scan";
+    pageSpeedData = defaultPageSpeedData(psReason);
   }
 
   if (crawlResult.status === "fulfilled") {
