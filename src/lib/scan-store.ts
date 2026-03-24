@@ -50,21 +50,10 @@ export function isVercelRuntime(): boolean {
 /**
  * Schedule work to continue after the response (Vercel). Returns false if not supported — caller should await work.
  */
-export async function scheduleScanBackground(work: () => Promise<void>): Promise<boolean> {
-  if (process.env.SCAN_SYNC_ONLY === "1") return false;
-  if (!isVercelRuntime()) return false;
-  try {
-    const { waitUntil } = await import("@vercel/functions");
-    waitUntil(
-      work().catch((err) => {
-        console.error("[scan-store] background scan failed", err);
-      })
-    );
-    return true;
-  } catch (e) {
-    console.warn("[scan-store] waitUntil unavailable, falling back to sync scan", e);
-    return false;
-  }
+export async function scheduleScanBackground(_work: () => Promise<void>): Promise<boolean> {
+  // waitUntil on Vercel Hobby/Pro kills background jobs after a few seconds,
+  // leaving scans stuck at their initial phase forever. Run synchronously instead.
+  return false;
 }
 
 function getAdminClientSafe(): ReturnType<typeof getSupabaseAdminClient> | null {
