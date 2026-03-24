@@ -11,6 +11,7 @@ import {
   getRelevantItems,
   mapScanProfileToUserProfile,
 } from "@/lib/gmc-checklist";
+import { tryParseJsonFromClaudeText } from "@/lib/claude-json-extract";
 import { gatherOsint, formatOsintBlock } from "@/lib/osint";
 import { updateScanProgress } from "@/lib/scan-store";
 import { SCAN_PHASES, phaseDetailFor } from "@/lib/scan-progress-phases";
@@ -59,17 +60,11 @@ function sanitizeEvidence(evidence: string): string {
 }
 
 function parseClaudeJson(raw: string): ClaudeAnalysisOutput {
-  const cleaned = raw
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
-
-  const first = cleaned.indexOf("{");
-  const last = cleaned.lastIndexOf("}");
-  const maybeJson =
-    first !== -1 && last !== -1 && last > first ? cleaned.slice(first, last + 1) : cleaned;
-  const parsed = JSON.parse(maybeJson) as Record<string, unknown>;
+  const parsedObj = tryParseJsonFromClaudeText(raw);
+  if (!parsedObj || typeof parsedObj !== "object") {
+    throw new Error("Claude returned non-JSON response");
+  }
+  const parsed = parsedObj as Record<string, unknown>;
 
   const checklistResultsInput =
     parsed.checklist_results && typeof parsed.checklist_results === "object"

@@ -33,7 +33,7 @@ export async function GET(req: Request) {
     // Embed returnTo in state so it survives the full OAuth round-trip
     const state = createShopifyOAuthState(returnTo);
     const nonce = state.split("|")[0];
-    const redirectUri = getShopifyRedirectUri();
+    const redirectUri = getShopifyRedirectUri(req);
     const oauthUrl = buildShopifyOAuthUrl({ shop, state, redirectUri });
     const res = NextResponse.redirect(oauthUrl);
     // Store only the nonce for CSRF validation

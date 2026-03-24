@@ -56,9 +56,31 @@ function getShopifyOAuthConfig() {
   return { clientId, clientSecret };
 }
 
-export function getShopifyRedirectUri(): string {
-  if (process.env.SHOPIFY_REDIRECT_URI) return process.env.SHOPIFY_REDIRECT_URI;
-  const base = (process.env.NEXTAUTH_URL || process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
+/**
+ * Must match **exactly** one "Allowed redirection URL" in Shopify Partners (same scheme, host, path — no trailing slash).
+ * Prefer deriving from the incoming request on Vercel so it matches the domain the user opened (avoids www/apex mismatches).
+ * Override with SHOPIFY_REDIRECT_URI if you need a single fixed URL.
+ */
+export function getShopifyRedirectUri(req?: Request): string {
+  const explicit = process.env.SHOPIFY_REDIRECT_URI?.trim();
+  if (explicit) return explicit.replace(/\/$/, "");
+
+  if (req) {
+    const hostRaw = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+    const host = hostRaw?.split(",")[0]?.trim();
+    const proto =
+      req.headers.get("x-forwarded-proto") ??
+      (host && /localhost|127\.0\.0\.1|\[::1\]/i.test(host) ? "http" : "https");
+    if (host) {
+      const base = `${proto}://${host}`.replace(/\/$/, "");
+      return `${base}/api/shopify/oauth/callback`;
+    }
+  }
+
+  const base = (process.env.NEXTAUTH_URL || process.env.APP_URL || "http://localhost:3000").replace(
+    /\/$/,
+    ""
+  );
   return `${base}/api/shopify/oauth/callback`;
 }
 

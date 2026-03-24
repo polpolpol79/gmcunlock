@@ -885,10 +885,12 @@ function ReportPageClient() {
     if (!pollState?.scanId) return;
     const id = pollState.scanId;
     const startedAt = pollState.startedAt;
+    const scanType = pollState.scanType;
     const ac = new AbortController();
     let intervalId: ReturnType<typeof setInterval> | undefined;
     let consecutiveFailures = 0;
-    const MAX_POLL_MS = 210_000;
+    /** Full scans (crawl + PageSpeed + Google/Shopify + Claude) often exceed a few minutes. */
+    const maxPollMs = scanType === "paid" ? 900_000 : 210_000;
 
     async function tick() {
       try {
@@ -910,10 +912,14 @@ function ReportPageClient() {
         }
         consecutiveFailures = 0;
 
-        if (Date.now() - startedAt > MAX_POLL_MS) {
+        if (Date.now() - startedAt > maxPollMs) {
           if (intervalId) clearInterval(intervalId);
           setPollState(null);
-          setError("Scan is taking longer than expected. Please retry.");
+          setError(
+            scanType === "paid"
+              ? "This full scan is taking longer than the page waits for. It may still finish in the background — open this report link again in a few minutes, or use Retry."
+              : "Scan is taking longer than expected. Please retry."
+          );
           return;
         }
 
@@ -975,7 +981,7 @@ function ReportPageClient() {
       if (intervalId) clearInterval(intervalId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pollState?.scanId, pollState?.startedAt]);
+  }, [pollState?.scanId, pollState?.startedAt, pollState?.scanType]);
 
   useEffect(() => {
     if (!data?.url || pagespeedSource === "live" || pagespeedSource === "cached" || pagespeedRefreshState !== "idle") return;

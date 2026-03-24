@@ -5,7 +5,6 @@ import {
   SHOPIFY_OAUTH_SHOP_COOKIE,
   SHOPIFY_OAUTH_STATE_COOKIE,
   exchangeCodeForShopifyToken,
-  getShopifyRedirectUri,
   isValidShopDomain,
   normalizeShopDomain,
   parseShopifyOAuthState,
@@ -77,7 +76,6 @@ export async function GET(req: Request) {
       );
     }
 
-    void getShopifyRedirectUri();
     const accessToken = await exchangeCodeForShopifyToken({ shop, code });
     await upsertShopifyConnectionForUser(userId, shop, accessToken);
 

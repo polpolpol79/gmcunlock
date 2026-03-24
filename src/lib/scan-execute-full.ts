@@ -24,6 +24,7 @@ import {
 } from "@/lib/google";
 import { fetchShopifyConnectedDataForUser } from "@/lib/shopify";
 import { gatherOsint, formatOsintBlock } from "@/lib/osint";
+import { tryParseJsonFromClaudeText } from "@/lib/claude-json-extract";
 import {
   ClaudeAnalysisSchema,
   type ClaudeAnalysisOutput,
@@ -175,31 +176,7 @@ function extractClaudeText(content: Anthropic.Messages.Message["content"]): stri
 }
 
 export function parseClaudeJson(raw: string): ClaudeAnalysisResult {
-  const cleaned = raw
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
-
-  const direct = (() => {
-    try {
-      return JSON.parse(cleaned) as unknown;
-    } catch {
-      return null;
-    }
-  })();
-
-  const parsed = direct ?? (() => {
-    const first = cleaned.indexOf("{");
-    const last = cleaned.lastIndexOf("}");
-    if (first === -1 || last === -1 || last <= first) return null;
-    const maybeJson = cleaned.slice(first, last + 1);
-    try {
-      return JSON.parse(maybeJson) as unknown;
-    } catch {
-      return null;
-    }
-  })();
+  const parsed = tryParseJsonFromClaudeText(raw);
 
   if (!parsed || typeof parsed !== "object") {
     throw new Error("Claude returned non-JSON response");
