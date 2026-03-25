@@ -649,11 +649,30 @@ export async function crawlWebsite(url: string): Promise<WebsiteScanData> {
   };
 }
 
+/** ISO-like country code from public TLD when text signals are absent (e.g. .co.il → IL). */
+export function inferCountryFromHostname(hostname: string): string | null {
+  const h = hostname.toLowerCase().replace(/^www\./, "");
+  if (h.endsWith(".co.il") || h.endsWith(".org.il") || h.endsWith(".gov.il")) return "IL";
+  if (h.endsWith(".co.uk") || h.endsWith(".uk")) return "GB";
+  if (h.endsWith(".com.au") || h.endsWith(".net.au") || h.endsWith(".org.au")) return "AU";
+  if (h.endsWith(".de")) return "DE";
+  if (h.endsWith(".fr")) return "FR";
+  if (h.endsWith(".ca")) return "CA";
+  return null;
+}
+
 /** Full SiteFingerprint for checklist (adds siteType / platform enum / country). */
 export function toSiteFingerprint(scan: WebsiteScanData): SiteFingerprint {
+  let hostname = "";
+  try {
+    hostname = new URL(scan.url.startsWith("http") ? scan.url : `https://${scan.url}`).hostname;
+  } catch {
+    hostname = "";
+  }
   const bundle = scan.pages.map((p) => p.text).join("\n") + scan.allLinksFound.join(" ");
-  const country =
-    /\+972|ישראל|israel/i.test(bundle) ? "IL" : null;
+  const countryFromSignals = /\+972|ישראל|israel/i.test(bundle) ? "IL" : null;
+  const countryFromTld = hostname ? inferCountryFromHostname(hostname) : null;
+  const country = countryFromSignals ?? countryFromTld;
   return {
     ...scan.fingerprint,
     siteType: inferSiteType(bundle + (scan.platform ?? "")),

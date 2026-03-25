@@ -706,7 +706,10 @@ export async function executeFullScanPipeline(
 
   const shopifyPromise = fetchShopifyConnectedDataForUser(userId);
 
-  const osintPromise = gatherOsint(url, fp.businessName ?? null).catch(() => null);
+  const osintPromise = gatherOsint(url, fp.businessName ?? null, {
+    countryCode: fp.country,
+    language: fp.language,
+  }).catch(() => null);
 
   const [googleResult, shopifyData, osintData] = await Promise.all([
     googlePromise,
