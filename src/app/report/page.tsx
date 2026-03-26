@@ -168,6 +168,19 @@ function isAbortError(error: unknown): boolean {
   return name === "AbortError";
 }
 
+/** Use crawl `html lang` so Hebrew (and other RTL) analysis text renders with correct bidi / punctuation. */
+function reportDirFromLanguage(lang: string | null | undefined): "rtl" | "ltr" {
+  const code = lang?.trim().toLowerCase().split(/[-_]/)[0] ?? "";
+  if (code === "he" || code === "ar" || code === "fa" || code === "ur") return "rtl";
+  return "ltr";
+}
+
+function reportLangFromLanguage(lang: string | null | undefined): string {
+  const code = lang?.trim().toLowerCase().split(/[-_]/)[0] ?? "";
+  if (code === "he" || code === "ar" || code === "fa" || code === "ur") return code;
+  return "en";
+}
+
 function phaseStepIndex(phase: string, scanType: ScanType): number {
   const paid = ["queued", "pagespeed_crawl", "google_shopify", "analysis", "persist", "done"];
   const free = ["queued", "pagespeed_crawl", "analysis", "persist", "done"];
@@ -1117,6 +1130,8 @@ function ReportPageClient() {
     : pagespeedCached
     ? "Cached snapshot"
     : "Live snapshot";
+  const reportDir = reportDirFromLanguage(businessFingerprint?.language);
+  const reportLang = reportLangFromLanguage(businessFingerprint?.language);
   const coverageCards = [
     {
       label: "Pages scanned",
@@ -1148,7 +1163,7 @@ function ReportPageClient() {
   ];
 
   return (
-    <div dir="ltr" className="app-shell">
+    <div dir={reportDir} lang={reportLang} className="app-shell">
       <div className="app-container py-8 sm:py-10">
         <div className="app-frame rounded-[36px] p-6 sm:p-8">
           <div className="flex flex-col lg:flex-row gap-8 lg:items-center lg:justify-between">
